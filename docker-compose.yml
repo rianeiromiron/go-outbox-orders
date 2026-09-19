@@ -1,0 +1,33 @@
+name: go-outbox-orders
+
+# Fase 1: solo PostgreSQL para desarrollo local de orders-api.
+# La Fase 3 añade redis, migrate, orders-api y notifier-worker a este mismo archivo.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: orders # solo desarrollo local
+      POSTGRES_DB: orders
+    ports:
+      - "127.0.0.1:5433:5432" # 5433 en el host para no chocar con otros Postgres; solo loopback
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    networks:
+      - outbox-net
+
+# Red propia y aislada: no se reutiliza ninguna red de otros proyectos, no hay
+# `external: true` y ningún servicio usa la red `default`.
+networks:
+  outbox-net:
+    name: outbox-net
+    driver: bridge
+
+volumes:
+  postgres-data:

@@ -45,7 +45,7 @@ idempotente (ver "Notas de diseño").
 ## Estado del proyecto
 
 - [x] Fase 0 — Scaffolding (git, go.work, estructura, Makefile)
-- [ ] Fase 1 — orders-api (endpoint + outbox pattern)
+- [x] Fase 1 — orders-api (endpoint + outbox pattern)
 - [ ] Fase 2 — notifier-worker (Redis + Asynq)
 - [ ] Fase 3 — Docker Compose (red aislada `outbox-net`)
 - [ ] Fase 4 — CI con GitHub Actions
@@ -74,8 +74,8 @@ despliegan por separado.
 ```
 go-outbox-orders/
 ├── go.work                      # use ./orders-api ./notifier-worker (solo dev local)
-├── docker-compose.yml           # Fase 3 — define la red outbox-net
-├── Makefile                     # atajos: build, vet, test, tidy (up/down/migrate llegan en la Fase 3)
+├── docker-compose.yml           # define la red outbox-net; hoy solo postgres (Fase 3 añade el resto)
+├── Makefile                     # build, vet, test, tidy, db-up, db-down, migrate, run-orders-api
 ├── .gitignore
 ├── README.md
 ├── .github/workflows/ci.yml     # Fase 4
@@ -85,16 +85,18 @@ go-outbox-orders/
 │   ├── Dockerfile
 │   ├── README.md
 │   ├── cmd/server/main.go       # composition root: config, pool, router, shutdown
-│   ├── migrations/              # SQL (goose): orders, order_items, outbox_events
+│   ├── cmd/migrate/main.go      # aplica migraciones y termina (job one-shot)
+│   ├── migrations/              # SQL (goose, embebido): orders, order_items, outbox_events
 │   └── internal/
 │       ├── config/              # lectura de env vars
 │       ├── order/               # dominio + servicio (crear/obtener pedido)
-│       │   ├── model.go
+│       │   ├── model.go         # modelo + validación
 │       │   ├── service.go       # orquesta la transacción pedido+outbox
 │       │   └── repository.go    # SQL con pgx
-│       ├── outbox/              # insertar evento dentro de un pgx.Tx dado
-│       ├── httpapi/             # router chi, handlers, DTOs, middleware, errores JSON
-│       └── platform/postgres/   # pgxpool + helper de transacciones
+│       ├── outbox/              # insertar evento dentro de un pgx.Tx dado (dedupe)
+│       ├── httpapi/             # router chi, handlers, middleware, errores JSON
+│       ├── platform/postgres/   # pgxpool + DBTX + Migrate
+│       └── testdb/              # Postgres real (testcontainers) para los tests
 │
 ├── notifier-worker/             # módulo: github.com/rianeiromiron/go-outbox-orders/notifier-worker
 │   ├── go.mod
@@ -149,9 +151,13 @@ orders(id uuid pk, customer_email text, total_cents bigint, currency text,
 order_items(id uuid pk, order_id uuid fk, sku text, quantity int, unit_price_cents bigint)
 outbox_events(id uuid pk, aggregate_type text, aggregate_id uuid,
               event_type text,            -- p. ej. 'order.created'
+              dedupe_key text not null unique,  -- determinista: 'order.created:<order_id>'
               payload jsonb, created_at timestamptz,
               published_at timestamptz null, attempts int default 0, last_error text)
 -- índice parcial: (created_at) WHERE published_at IS NULL
+-- La unicidad va en dedupe_key (clave del evento de NEGOCIO), no en `id`:
+-- un UUID aleatorio por inserción nunca colisionaría y no deduplicaría nada.
+-- Se inserta con ON CONFLICT (dedupe_key) DO NOTHING.
 ```
 
 API (Fase 1): `POST /orders`, `GET /orders/{id}`, `GET /healthz`,
@@ -166,14 +172,23 @@ crean las carpetas que ya tienen contenido (`cmd/…`); las de `internal/` se
 crean en la fase que las usa. *Hecho cuando:* `make build` y `make vet`
 pasan en ambos módulos.
 
-**Fase 1 — orders-api.** Migraciones; `POST /orders` que en **una
+**Fase 1 — orders-api (completada).** Migraciones; `POST /orders` que en **una
 transacción** inserta pedido + items + `outbox_events`; `GET /orders/{id}`;
 health checks; validación; errores JSON consistentes; graceful shutdown.
-Tests de integración que verifican: (a) éxito → pedido y evento existen;
-(b) fallo forzado a mitad de la transacción → no queda ni uno ni otro.
-Postgres para desarrollo con un `docker run` temporal (Compose llega en la
-Fase 3). *Hecho cuando:* los tests pasan y el README del servicio explica
-cómo probarlo con `curl`.
+Tests de integración (contra Postgres real) que verifican: (a) éxito →
+pedido y evento existen; (b) **atomicidad**: si falla el insert del evento
+(trigger que lanza excepción) se revierte todo — 0 filas en `orders`,
+`order_items` y `outbox_events` — y, al reintentar, queda exactamente 1 de
+cada uno; (c) **deduplicación**: dos caminos de código independientes que
+emiten `order.created` para el mismo pedido (secuencial y concurrente)
+producen una sola fila en `outbox_events`, sin error para el segundo
+emisor. Los tests de atomicidad y deduplicación se validaron con mutación
+(romper el código de producción los hace fallar).
+Para el Postgres de desarrollo se adelantó un `docker-compose.yml` mínimo
+(solo `postgres`) en lugar de un `docker run`, para que desde el principio
+viva en la red `outbox-net`. *Hecho cuando:* los tests pasan y el README del
+servicio explica cómo probarlo con `curl` (ver
+[orders-api/README.md](orders-api/README.md)).
 
 **Fase 2 — notifier-worker.** Poller: `BEGIN; SELECT … FROM outbox_events
 WHERE published_at IS NULL ORDER BY created_at LIMIT n FOR UPDATE SKIP
@@ -228,20 +243,60 @@ Reglas: ningún servicio usa la red `default`, ningún servicio usa `external`,
 y la comunicación entre contenedores es por nombre de servicio
 (`postgres`, `redis`) dentro de `outbox-net`. Los puertos publicados al
 host usan valores no estándar (p. ej. `5433`, `6380`, `8081`) para no chocar
-con Postgres/Redis de tus otros proyectos; se confirman al llegar a la Fase 3.
+con Postgres/Redis de tus otros proyectos. En la Fase 1 se comprobó que
+`5433` y `8081` no estaban en escucha; `6380` (Redis) y cualquier conflicto
+con los `docker-compose` de tus otros proyectos se revisan en la Fase 3.
 
 ## Cómo correr el proyecto
 
-*(Se agrega al completar la Fase 3 — instrucciones de
-`docker compose up`.)*
+Estado actual (Fase 1): solo `orders-api` con su Postgres. Requisitos: Go
+(el proyecto declara `go 1.26.0`; con `GOTOOLCHAIN=auto`, el valor por
+defecto, un Go 1.21+ descarga ese toolchain solo), Docker y `make`.
+
+```bash
+make db-up          # Postgres en la red outbox-net (127.0.0.1:5433)
+make migrate
+make run-orders-api # http://localhost:8081
+make test           # tests (los de integración levantan su propio Postgres)
+make db-down
+```
+
+Detalle, ejemplos con `curl` y qué cubre cada test:
+[orders-api/README.md](orders-api/README.md).
+
+*(El `docker compose up` completo con todos los servicios se agrega al
+terminar la Fase 3.)*
 
 ## Notas de diseño
 
-- **At-least-once + idempotencia.** El outbox garantiza que ningún evento
-  se pierde, a costa de posibles duplicados. Dos defensas: `TaskID` de Asynq
-  = id del evento (evita encolar dos veces el mismo mientras la tarea esté
-  retenida), y handlers idempotentes (el efecto se aplica una sola vez por
-  `event.id`).
+- **At-least-once + idempotencia en tres capas.** El outbox garantiza que
+  ningún evento se pierde, a costa de posibles duplicados; no se asume que
+  exista un único punto de publicación (en el sistema Django original, dos
+  caminos de código publicaron el mismo evento de forma independiente).
+  1. *Emisión (orders-api):* `UNIQUE(dedupe_key)` + `ON CONFLICT DO NOTHING`.
+     Es la defensa durable: una vez commiteado, el evento de negocio existe
+     una sola vez sin importar cuántos caminos lo emitan.
+  2. *Encolado (notifier-worker):* `TaskID` de Asynq = id de la fila. Es
+     una defensa parcial: solo deduplica mientras la tarea siga retenida en
+     Redis.
+  3. *Consumo (notifier-worker):* handlers idempotentes — el efecto se aplica
+     una sola vez por `event.id` (tabla/clave de "ya procesado"). Es la
+     defensa final ante reentregas y ante el caso "publicó pero cayó antes de
+     marcar `published_at`".
+- **La clave de deduplicación es de negocio, no técnica.** `UNIQUE` sobre el
+  `id` de la fila no habría evitado el bug de duplicación del sistema Django:
+  cada camino genera su propio UUID. Por eso existe `dedupe_key`
+  determinista + `ON CONFLICT DO NOTHING`.
+- **Versión de Go: 1.26.** `goose v3.28` exige Go 1.26 (y `pgx` 5.11 y
+  `testcontainers` 0.44, ≥ 1.25), así que todos los módulos y `go.work`
+  declaran `go 1.26.0`. Usar versiones antiguas de esas librerías solo para
+  conservar Go 1.24 no compensa. Los Dockerfiles (Fase 3) y el CI (Fase 4)
+  deben usar Go 1.26.
+- **Migraciones como comando aparte** (`cmd/migrate`), no al arrancar la API:
+  con varias réplicas no compiten por migrar, y encaja como job de Compose y
+  de Kubernetes.
+- **Validación → 422, JSON malformado → 400; los 500 no filtran detalles**
+  (van al log con `request_id`). Las fechas se exponen siempre en UTC.
 - **Por qué `FOR UPDATE SKIP LOCKED`.** Permite escalar el worker a varias
   réplicas sin que dos pollers tomen las mismas filas.
 - **"Publica a Redis" = encolar con Asynq.** Asynq guarda sus colas en Redis;
