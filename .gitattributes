@@ -1,0 +1,2 @@
+# Normaliza finales de línea a LF en el repo (Dockerfiles y scripts deben ser LF)
+* text=auto eol=lf

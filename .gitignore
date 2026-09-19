@@ -1,0 +1,34 @@
+# Binarios y artefactos de build
+*.exe
+*.test
+*.out
+/bin/
+/dist/
+
+# Cobertura
+coverage.txt
+coverage.html
+
+# Entorno local y secretos
+.env
+.env.*
+!.env.example
+
+# Terraform / LocalStack
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+.localstack/
+volume/
+
+# Workspace de Go (el go.work se versiona; el sum es local)
+go.work.sum
+
+# IDE / SO
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
