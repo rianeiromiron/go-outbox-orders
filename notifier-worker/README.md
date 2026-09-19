@@ -102,6 +102,21 @@ Para ver la **capa 2**, vuelve a marcar el evento como pendiente
 Prueba de punta a punta con la API: `make run-orders-api` en otra terminal y
 un `POST /orders` (ver el README de orders-api).
 
+## En Docker
+
+`Dockerfile` multi-stage (`golang:1.26-alpine` → `alpine:3.22`), binario
+estático `/app/worker`, usuario no-root. Contexto de build: este directorio
+(no depende de `go.work`). En Compose el servicio arranca después de
+`postgres` y `redis` sanos y de que `migrate` termine, con
+`REDIS_ADDR=redis:6379` dentro de `outbox-net`:
+
+```bash
+make up                                  # desde la raíz
+docker compose logs -f notifier-worker
+docker compose stop notifier-worker      # SIGTERM: apagado ordenado, código 0
+docker compose start notifier-worker     # publica lo que se acumuló en el outbox
+```
+
 ## Tests
 
 ```bash
@@ -154,8 +169,11 @@ Notas:
   `BATCH_SIZE` o más, podría retrasar a los demás. No hay estado de "muerto"
   porque implicaría cambiar el esquema de orders-api; queda como mejora.
 - **Apagado ordenado.** `Poller.Run` termina el lote en curso al cancelar el
-  contexto y `main` llama a `Server.Shutdown`; el primer punto está cubierto
-  por test. La señal real (SIGTERM/Ctrl+C) no se ha probado de punta a punta
-  en Windows (los procesos de la verificación manual se terminaron con
-  `taskkill /F`).
-- No hay endpoint de salud ni métricas: se decide en la fase de Kubernetes.
+  contexto y `main` llama a `Server.Shutdown`. Está cubierto por test y
+  verificado con la señal real en Docker: `docker compose stop` (SIGTERM) →
+  log `apagando: terminando tareas en curso` y código de salida 0. Con
+  `go run` en Windows, Ctrl+C no se ha probado de punta a punta.
+- **Sin healthcheck ni métricas.** El worker no expone HTTP: en Compose no
+  tiene `healthcheck` (si el proceso muere, el contenedor termina y
+  `restart: unless-stopped` lo levanta). Cómo hacer readiness se decide en la
+  fase de Kubernetes.

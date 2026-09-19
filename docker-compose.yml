@@ -1,8 +1,15 @@
 name: go-outbox-orders
 
-# Fases 1-2: PostgreSQL y Redis para desarrollo local de orders-api y notifier-worker
-# (los servicios se corren con `go run`). La Fase 3 añade migrate, orders-api y
-# notifier-worker a este mismo archivo.
+# Stack completo: todos los componentes son nuevos y viven en UNA sola red
+# aislada (outbox-net). No se reutiliza ningún contenedor, volumen ni red de
+# otros proyectos; los nombres de volúmenes e imágenes llevan el prefijo del
+# proyecto.
+#
+#   docker compose up -d --build --wait     (o: make up)
+#
+# Solo se publican en el host, y únicamente en 127.0.0.1, los puertos que sirven
+# para probar desde fuera: 5433 (postgres), 6380 (redis) y 8081 (orders-api).
+# Entre contenedores todo se habla por nombre de servicio dentro de outbox-net.
 
 services:
   postgres:
@@ -12,7 +19,7 @@ services:
       POSTGRES_PASSWORD: orders # solo desarrollo local
       POSTGRES_DB: orders
     ports:
-      - "127.0.0.1:5433:5432" # 5433 en el host para no chocar con otros Postgres; solo loopback
+      - "127.0.0.1:5433:5432" # 5433 en el host para no chocar con otros Postgres
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -20,13 +27,14 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
     networks:
       - outbox-net
 
   redis:
     image: redis:7-alpine
     ports:
-      - "127.0.0.1:6380:6379" # 6380 en el host para no chocar con otros Redis; solo loopback
+      - "127.0.0.1:6380:6379" # 6380 en el host para no chocar con otros Redis
     volumes:
       - redis-data:/data
     healthcheck:
@@ -34,6 +42,67 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
+    networks:
+      - outbox-net
+
+  # Job de una sola ejecución: aplica las migraciones y termina. La API y el
+  # worker esperan a que termine bien (service_completed_successfully).
+  migrate:
+    build: ./orders-api
+    image: go-outbox-orders/orders-api:dev
+    command: ["/app/migrate"]
+    environment:
+      DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - outbox-net
+
+  orders-api:
+    build: ./orders-api
+    image: go-outbox-orders/orders-api:dev
+    environment:
+      DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
+      HTTP_ADDR: ":8080"
+    ports:
+      - "127.0.0.1:8081:8080" # 8081 en el host (8080 lo usan otros proyectos)
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # /readyz comprueba la conexión a la base de datos; wget viene con busybox.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - outbox-net
+
+  # Sin healthcheck: no expone HTTP (decisión pendiente para la fase de
+  # Kubernetes) y si el proceso muere el contenedor termina y `restart` lo
+  # levanta de nuevo.
+  notifier-worker:
+    build: ./notifier-worker
+    image: go-outbox-orders/notifier-worker:dev
+    environment:
+      DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
+      REDIS_ADDR: redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 20s # margen sobre el apagado ordenado (lote en curso + tareas activas)
+    restart: unless-stopped
     networks:
       - outbox-net
 

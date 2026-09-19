@@ -47,7 +47,7 @@ idempotente (ver "Notas de diseño").
 - [x] Fase 0 — Scaffolding (git, go.work, estructura, Makefile)
 - [x] Fase 1 — orders-api (endpoint + outbox pattern)
 - [x] Fase 2 — notifier-worker (Redis + Asynq)
-- [ ] Fase 3 — Docker Compose (red aislada `outbox-net`)
+- [x] Fase 3 — Docker Compose (red aislada `outbox-net`)
 - [ ] Fase 4 — CI con GitHub Actions
 - [ ] Fase 5 — Despliegue en Kubernetes
 - [ ] Fase 6 — LocalStack + Terraform (S3)
@@ -74,8 +74,8 @@ despliegan por separado.
 ```
 go-outbox-orders/
 ├── go.work                      # use ./orders-api ./notifier-worker (solo dev local)
-├── docker-compose.yml           # define la red outbox-net; hoy postgres y redis (Fase 3 añade los servicios)
-├── Makefile                     # build, vet, test, tidy, db-up, db-down, migrate, run-orders-api, run-notifier-worker
+├── docker-compose.yml           # stack completo en la red outbox-net: postgres, redis, migrate, orders-api, notifier-worker
+├── Makefile                     # build, vet, test, tidy, up, down, logs, ps, db-up, db-down, migrate, run-*
 ├── .gitignore
 ├── README.md
 ├── .github/workflows/ci.yml     # Fase 4
@@ -208,12 +208,17 @@ limitaciones conocidas). *Hecho cuando:* crear un pedido en la API produce el
 log de notificación, y volver a marcar el evento como pendiente no duplica la
 notificación (verificado a mano y con tests).
 
-**Fase 3 — Docker Compose.** Dockerfiles multi-stage (build → imagen
-mínima, usuario no-root). `docker-compose.yml` con `postgres`, `redis`,
-job de migración, `orders-api`, `notifier-worker`, healthchecks y
-`depends_on: condition: service_healthy`. Ver "Red Docker aislada" abajo.
-*Hecho cuando:* `docker compose up` levanta todo desde cero y el flujo
-end-to-end funciona.
+**Fase 3 — Docker Compose (completada).** Un Dockerfile multi-stage por
+servicio (`golang:1.26-alpine` → `alpine:3.22`, binario estático, usuario
+no-root, `GOTOOLCHAIN=local`). La imagen de `orders-api` lleva dos binarios:
+`/app/server` y `/app/migrate`, que es el job de migración. `docker-compose.yml`
+levanta `postgres`, `redis`, `migrate`, `orders-api` y `notifier-worker`, con
+`healthcheck` en postgres, redis y la API, y el orden de arranque garantizado
+con `depends_on` (`service_healthy` y `service_completed_successfully`).
+**Todos los componentes son nuevos y están únicamente en `outbox-net`**: ver
+"Red Docker aislada" abajo. *Hecho cuando:* `docker compose up` levanta todo
+desde cero y el flujo funciona — verificado, incluyendo apagado con SIGTERM,
+recuperación del backlog con el worker caído y persistencia tras `down`/`up`.
 
 **Fase 4 — CI (GitHub Actions).** `go vet`, `golangci-lint`, `go test` por
 módulo (con servicios Postgres/Redis), build de imágenes. Requiere
@@ -229,9 +234,13 @@ que el worker guarde el "recibo" de la notificación en S3.
 
 ## Red Docker aislada (`outbox-net`)
 
-Requisito: no reutilizar ninguna red de otros proyectos. Tu Docker ya tiene
-14 redes (`kqr_default`, `infra_saga-network`, `gov-notifier`, `kind`, …) y
-ninguna se llama `outbox-net`. En `docker-compose.yml`:
+Reglas del proyecto:
+
+1. **Todos los componentes en la misma red**, `outbox-net`.
+2. **Todo nuevo**: no se reutiliza ningún contenedor, volumen ni red de otros
+   proyectos (imágenes propias `go-outbox-orders/*:dev`, volúmenes
+   `go-outbox-orders_*`).
+3. **Lo que ya existe en Docker no se toca.**
 
 ```yaml
 name: go-outbox-orders        # nombre del proyecto Compose (fijo)
@@ -245,25 +254,65 @@ networks:
 services:
   postgres:
     networks: [outbox-net]
-  # …todos los servicios declaran explícitamente networks: [outbox-net]
+  # …los 5 servicios declaran explícitamente networks: [outbox-net]
 ```
 
-Reglas: ningún servicio usa la red `default`, ningún servicio usa `external`,
-y la comunicación entre contenedores es por nombre de servicio
-(`postgres`, `redis`) dentro de `outbox-net`. Los puertos publicados al
-host usan valores no estándar (p. ej. `5433`, `6380`, `8081`) para no chocar
-con Postgres/Redis de tus otros proyectos. Se comprobó que `5433`, `8081`
-(Fase 1) y `6380` (Fase 2) no estaban en escucha ni usados por ningún
-contenedor en ejecución; eso NO cubre proyectos que hoy estén detenidos, así
-que cualquier conflicto con los `docker-compose` de tus otros proyectos se
-revisa en la Fase 3.
+Ningún servicio usa la red `default` ni `external`, y los contenedores se
+hablan por nombre de servicio (`postgres`, `redis`) dentro de `outbox-net`.
+
+**Verificado en la Fase 3** con el stack en marcha: `docker inspect` de cada
+contenedor muestra `outbox-net` como su única red; `outbox-net` contiene solo
+contenedores `go-outbox-orders-*`; y comparando el estado de Docker antes y
+después (31 contenedores, 15 redes, 68 volúmenes y 41 imágenes previos) no
+cambió nada preexistente: solo se añadieron los 5 contenedores del proyecto, la
+red `outbox-net` y 2 imágenes.
+
+**Puertos del host**, todos en `127.0.0.1`: `5433` (postgres), `6380` (redis) y
+`8081` (orders-api, que dentro del contenedor escucha en `8080`). Se comprobó
+contra todos los contenedores existentes (también los detenidos) y contra los
+`docker-compose` de `goprojects`: nadie usa esos tres puertos. Los que sí usan
+tus otros proyectos son `2181`, `4566`, `6379`, `8000`, `8001`, `8080`, `9092`,
+`27017` y `29092`; por eso la API sale por `8081` y no por `8080`.
+
+**Excepción a tener presente:** los contenedores efímeros que los tests de
+integración levantan con testcontainers (Postgres y Redis) usan la red
+`bridge` por defecto de Docker, no `outbox-net`. No forman parte del stack, no
+se comunican con él y desaparecen al terminar los tests.
 
 ## Cómo correr el proyecto
 
-Estado actual (Fase 2): los dos servicios corren con `go run` contra Postgres
-y Redis en Docker. Requisitos: Go (el proyecto declara `go 1.26.0`; con
-`GOTOOLCHAIN=auto`, el valor por defecto, un Go 1.21+ descarga ese toolchain
-solo), Docker y `make`.
+### Todo en Docker (recomendado)
+
+Requisitos: Docker (Compose v2) y `make`. No hace falta tener Go instalado: las
+imágenes se compilan dentro de Docker.
+
+```bash
+make up      # construye las imágenes y levanta todo en la red outbox-net (espera a que esté sano)
+make ps      # estado de los servicios (migrate aparece como Exited (0): es un job)
+make logs    # sigue los logs
+make down    # detiene y elimina contenedores y red; los datos (volúmenes) se conservan
+```
+
+Probar el flujo completo:
+
+```bash
+curl -s -X POST http://localhost:8081/orders -d '{
+  "customer_email": "ana@example.com", "currency": "USD",
+  "items": [{"sku": "SKU-1", "quantity": 2, "unit_price_cents": 1500}]}'
+
+docker compose logs notifier-worker --no-log-prefix | grep notificación
+```
+
+Para borrar también los datos: `docker compose down -v` (solo elimina los
+volúmenes de este proyecto). Con el worker parado (`docker compose stop
+notifier-worker`) los pedidos siguen aceptándose y sus eventos esperan en el
+outbox; al volver (`docker compose start notifier-worker`) se publican todos.
+
+### Desarrollo con `go run`
+
+Requisitos: Go (el proyecto declara `go 1.26.0`; con `GOTOOLCHAIN=auto`, el
+valor por defecto, un Go 1.21+ descarga ese toolchain solo), Docker y `make`.
+Solo Postgres y Redis van en Docker:
 
 ```bash
 make db-up                # Postgres (127.0.0.1:5433) y Redis (127.0.0.1:6380) en outbox-net
@@ -274,13 +323,10 @@ make test                 # tests (los de integración levantan sus propios cont
 make db-down
 ```
 
-Con ambos corriendo, un `POST /orders` (ver el README de orders-api) produce
-en el log del worker `notificación enviada`. Detalle, ejemplos y qué cubre
-cada test: [orders-api/README.md](orders-api/README.md) y
+No mezcles los dos modos a la vez: ambos usan los puertos `5433`, `6380` y
+`8081`. Detalle, ejemplos y qué cubre cada test:
+[orders-api/README.md](orders-api/README.md) y
 [notifier-worker/README.md](notifier-worker/README.md).
-
-*(El `docker compose up` completo con todos los servicios se agrega al
-terminar la Fase 3.)*
 
 ## Notas de diseño
 

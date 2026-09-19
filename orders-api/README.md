@@ -105,6 +105,22 @@ docker compose exec postgres psql -U orders -d orders \
 Al terminar: `make db-down` (conserva los datos; añade `-v` a
 `docker compose down` para borrar el volumen).
 
+## En Docker
+
+`Dockerfile` multi-stage (`golang:1.26-alpine` → `alpine:3.22`), binarios
+estáticos, usuario no-root. Contexto de build: este directorio (no depende de
+`go.work`). **Una imagen, dos binarios**: `/app/server` (por defecto) y
+`/app/migrate`, que Compose ejecuta como el job `migrate` con
+`command: ["/app/migrate"]`. Dentro del contenedor la API escucha en `:8080`;
+Compose la publica como `127.0.0.1:8081`. Su `healthcheck` consulta `/readyz`
+(incluye la conexión a la base de datos).
+
+```bash
+make up          # desde la raíz: postgres, redis, migrate, orders-api y notifier-worker en outbox-net
+curl -s http://localhost:8081/readyz
+make down
+```
+
 ## Tests
 
 ```bash
