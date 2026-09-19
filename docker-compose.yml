@@ -1,7 +1,8 @@
 name: go-outbox-orders
 
-# Fase 1: solo PostgreSQL para desarrollo local de orders-api.
-# La Fase 3 añade redis, migrate, orders-api y notifier-worker a este mismo archivo.
+# Fases 1-2: PostgreSQL y Redis para desarrollo local de orders-api y notifier-worker
+# (los servicios se corren con `go run`). La Fase 3 añade migrate, orders-api y
+# notifier-worker a este mismo archivo.
 
 services:
   postgres:
@@ -22,6 +23,20 @@ services:
     networks:
       - outbox-net
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6380:6379" # 6380 en el host para no chocar con otros Redis; solo loopback
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    networks:
+      - outbox-net
+
 # Red propia y aislada: no se reutiliza ninguna red de otros proyectos, no hay
 # `external: true` y ningún servicio usa la red `default`.
 networks:
@@ -31,3 +46,4 @@ networks:
 
 volumes:
   postgres-data:
+  redis-data:

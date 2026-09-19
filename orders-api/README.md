@@ -73,7 +73,7 @@ Requisitos: Go (el módulo declara `go 1.26.0`; ver la nota en el README raíz)
 y Docker. Desde la raíz del repo:
 
 ```bash
-make db-up          # Postgres 16 en la red outbox-net, host 127.0.0.1:5433
+make db-up          # Postgres 16 (127.0.0.1:5433) y Redis (6380) en la red outbox-net
 make migrate        # aplica migraciones
 make run-orders-api # API en http://localhost:8081
 ```

@@ -46,7 +46,7 @@ idempotente (ver "Notas de diseño").
 
 - [x] Fase 0 — Scaffolding (git, go.work, estructura, Makefile)
 - [x] Fase 1 — orders-api (endpoint + outbox pattern)
-- [ ] Fase 2 — notifier-worker (Redis + Asynq)
+- [x] Fase 2 — notifier-worker (Redis + Asynq)
 - [ ] Fase 3 — Docker Compose (red aislada `outbox-net`)
 - [ ] Fase 4 — CI con GitHub Actions
 - [ ] Fase 5 — Despliegue en Kubernetes
@@ -74,8 +74,8 @@ despliegan por separado.
 ```
 go-outbox-orders/
 ├── go.work                      # use ./orders-api ./notifier-worker (solo dev local)
-├── docker-compose.yml           # define la red outbox-net; hoy solo postgres (Fase 3 añade el resto)
-├── Makefile                     # build, vet, test, tidy, db-up, db-down, migrate, run-orders-api
+├── docker-compose.yml           # define la red outbox-net; hoy postgres y redis (Fase 3 añade los servicios)
+├── Makefile                     # build, vet, test, tidy, db-up, db-down, migrate, run-orders-api, run-notifier-worker
 ├── .gitignore
 ├── README.md
 ├── .github/workflows/ci.yml     # Fase 4
@@ -104,10 +104,14 @@ go-outbox-orders/
 │   ├── README.md
 │   ├── cmd/worker/main.go       # arranca poller + asynq.Server, graceful shutdown
 │   └── internal/
-│       ├── config/
-│       ├── poller/              # lee outbox, encola en Asynq, marca published_at
-│       ├── tasks/               # tipos de tarea + payloads (contrato del evento)
-│       └── handlers/            # handlers Asynq (simulan la notificación)
+│       ├── config/              # variables de entorno
+│       ├── poller/              # lee outbox (SKIP LOCKED), encola en Asynq, marca published_at
+│       ├── tasks/               # tareas Asynq + payloads (contrato del evento)
+│       ├── handlers/            # handler de order.created
+│       ├── idempotency/         # guard en Redis: efecto una vez por event_id (capa 3)
+│       ├── notify/              # el efecto: Notifier (hoy solo log)
+│       ├── worker/              # arranque del asynq.Server
+│       └── testenv/             # Postgres y Redis reales (testcontainers) para los tests
 │
 ├── k8s/                         # Fase 5 (Deployments, Services, ConfigMap, Secret…)
 └── terraform/                   # Fase 6 (provider AWS apuntando a LocalStack)
@@ -190,14 +194,19 @@ viva en la red `outbox-net`. *Hecho cuando:* los tests pasan y el README del
 servicio explica cómo probarlo con `curl` (ver
 [orders-api/README.md](orders-api/README.md)).
 
-**Fase 2 — notifier-worker.** Poller: `BEGIN; SELECT … FROM outbox_events
-WHERE published_at IS NULL ORDER BY created_at LIMIT n FOR UPDATE SKIP
-LOCKED;` → encola cada evento en Asynq con `asynq.TaskID(event.id)` (dedupe)
-→ `UPDATE published_at` → `COMMIT`. `asynq.Server` con handlers que
-"envían" la notificación (log). Reintentos con backoff y `attempts`/
-`last_error`. Graceful shutdown de poller y server. *Hecho cuando:* crear un
-pedido en la API produce el log de notificación, y matar/reiniciar el
-worker no pierde ni duplica efectos visibles.
+**Fase 2 — notifier-worker (completada).** Poller: `BEGIN; SELECT … FROM
+outbox_events WHERE published_at IS NULL ORDER BY created_at LIMIT n FOR
+UPDATE SKIP LOCKED;` → encola cada evento en Asynq con
+`asynq.TaskID(event.id)` (capa 2) → `UPDATE published_at` → `COMMIT`.
+`asynq.Server` con un handler que "envía" la notificación (log) dentro de un
+guard de idempotencia en Redis (capa 3). Reintentos con backoff de Asynq y
+`attempts`/`last_error` en el outbox cuando no se puede encolar. Se añadió
+Redis (`127.0.0.1:6380`) al `docker-compose.yml`, en `outbox-net`. Tests con
+Postgres y Redis reales, validados con mutación (ver el
+[README del worker](notifier-worker/README.md), que también lista las
+limitaciones conocidas). *Hecho cuando:* crear un pedido en la API produce el
+log de notificación, y volver a marcar el evento como pendiente no duplica la
+notificación (verificado a mano y con tests).
 
 **Fase 3 — Docker Compose.** Dockerfiles multi-stage (build → imagen
 mínima, usuario no-root). `docker-compose.yml` con `postgres`, `redis`,
@@ -243,26 +252,32 @@ Reglas: ningún servicio usa la red `default`, ningún servicio usa `external`,
 y la comunicación entre contenedores es por nombre de servicio
 (`postgres`, `redis`) dentro de `outbox-net`. Los puertos publicados al
 host usan valores no estándar (p. ej. `5433`, `6380`, `8081`) para no chocar
-con Postgres/Redis de tus otros proyectos. En la Fase 1 se comprobó que
-`5433` y `8081` no estaban en escucha; `6380` (Redis) y cualquier conflicto
-con los `docker-compose` de tus otros proyectos se revisan en la Fase 3.
+con Postgres/Redis de tus otros proyectos. Se comprobó que `5433`, `8081`
+(Fase 1) y `6380` (Fase 2) no estaban en escucha ni usados por ningún
+contenedor en ejecución; eso NO cubre proyectos que hoy estén detenidos, así
+que cualquier conflicto con los `docker-compose` de tus otros proyectos se
+revisa en la Fase 3.
 
 ## Cómo correr el proyecto
 
-Estado actual (Fase 1): solo `orders-api` con su Postgres. Requisitos: Go
-(el proyecto declara `go 1.26.0`; con `GOTOOLCHAIN=auto`, el valor por
-defecto, un Go 1.21+ descarga ese toolchain solo), Docker y `make`.
+Estado actual (Fase 2): los dos servicios corren con `go run` contra Postgres
+y Redis en Docker. Requisitos: Go (el proyecto declara `go 1.26.0`; con
+`GOTOOLCHAIN=auto`, el valor por defecto, un Go 1.21+ descarga ese toolchain
+solo), Docker y `make`.
 
 ```bash
-make db-up          # Postgres en la red outbox-net (127.0.0.1:5433)
+make db-up                # Postgres (127.0.0.1:5433) y Redis (127.0.0.1:6380) en outbox-net
 make migrate
-make run-orders-api # http://localhost:8081
-make test           # tests (los de integración levantan su propio Postgres)
+make run-orders-api       # http://localhost:8081            (terminal 1)
+make run-notifier-worker  # poller + consumidor Asynq        (terminal 2)
+make test                 # tests (los de integración levantan sus propios contenedores)
 make db-down
 ```
 
-Detalle, ejemplos con `curl` y qué cubre cada test:
-[orders-api/README.md](orders-api/README.md).
+Con ambos corriendo, un `POST /orders` (ver el README de orders-api) produce
+en el log del worker `notificación enviada`. Detalle, ejemplos y qué cubre
+cada test: [orders-api/README.md](orders-api/README.md) y
+[notifier-worker/README.md](notifier-worker/README.md).
 
 *(El `docker compose up` completo con todos los servicios se agrega al
 terminar la Fase 3.)*
@@ -277,12 +292,20 @@ terminar la Fase 3.)*
      Es la defensa durable: una vez commiteado, el evento de negocio existe
      una sola vez sin importar cuántos caminos lo emitan.
   2. *Encolado (notifier-worker):* `TaskID` de Asynq = id de la fila. Es
-     una defensa parcial: solo deduplica mientras la tarea siga retenida en
-     Redis.
+     una defensa parcial: solo deduplica mientras Asynq conserve la tarea
+     (pendiente, en curso, en reintento o completada dentro de 1 hora de
+     retención).
   3. *Consumo (notifier-worker):* handlers idempotentes — el efecto se aplica
-     una sola vez por `event.id` (tabla/clave de "ya procesado"). Es la
-     defensa final ante reentregas y ante el caso "publicó pero cayó antes de
-     marcar `published_at`".
+     una sola vez por `event.id` (claves `done` y `lock` con lease en Redis,
+     no una tabla, para no tocar el esquema de orders-api). Es la defensa
+     final ante reentregas y ante el caso "publicó pero cayó antes de marcar
+     `published_at`". Es "efectivamente una vez": si el proceso muere entre
+     aplicar el efecto y registrar `done`, el efecto se repite al expirar el
+     lease.
+- **"Publicar a Redis" tiene un matiz.** El evento se encola en Asynq dentro de
+  la transacción del poller, pero Redis y Postgres no comparten transacción:
+  por eso el orden es encolar → marcar → commit (nunca perder) y no al revés
+  (nunca duplicar), aceptando duplicados que las capas 2 y 3 absorben.
 - **La clave de deduplicación es de negocio, no técnica.** `UNIQUE` sobre el
   `id` de la fila no habría evitado el bug de duplicación del sistema Django:
   cada camino genera su propio UUID. Por eso existe `dedupe_key`
