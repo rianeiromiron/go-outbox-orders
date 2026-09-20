@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>orders-api · página de prueba</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>orders-api <span class="tag">página de prueba</span></h1>
+      <p class="muted">Solo para desarrollo local. Habla con esta misma API, sin CORS y sin dependencias externas.</p>
+    </div>
+    <div id="status" class="pill pill-wait" role="status" aria-live="polite">comprobando…</div>
+  </header>
+
+  <main>
+    <section class="card" aria-labelledby="h-create">
+      <h2 id="h-create">Crear pedido <code>POST /orders</code></h2>
+
+      <form id="order-form" novalidate>
+        <div class="grid2">
+          <label>Email del cliente
+            <input id="email" name="email" type="text" autocomplete="off" value="ana@example.com">
+          </label>
+          <label>Moneda <span class="muted">(3 letras mayúsculas)</span>
+            <input id="currency" name="currency" type="text" maxlength="3" autocomplete="off" value="USD">
+          </label>
+        </div>
+
+        <fieldset>
+          <legend>Items</legend>
+          <div id="items" class="items"></div>
+          <button type="button" id="add-item" class="btn-secondary">+ Añadir item</button>
+        </fieldset>
+
+        <p class="total">Total calculado en el cliente: <strong id="total">—</strong>
+          <span class="muted">(el servidor lo calcula por su cuenta; el cliente nunca lo envía)</span></p>
+
+        <div class="actions">
+          <button type="submit" class="btn-primary">Enviar POST /orders</button>
+          <button type="button" id="preset-ok" class="btn-secondary">Ejemplo válido</button>
+          <button type="button" id="preset-bad" class="btn-secondary">Ejemplo inválido (422)</button>
+          <button type="button" id="copy-curl" class="btn-secondary">Copiar como curl</button>
+        </div>
+      </form>
+
+      <div class="bulk">
+        <label>Enviar
+          <input id="bulk-n" type="number" min="1" max="50" value="10" class="narrow"> pedidos aleatorios
+        </label>
+        <button type="button" id="bulk-go" class="btn-secondary">Enviar en serie</button>
+        <span id="bulk-out" class="muted" role="status" aria-live="polite"></span>
+      </div>
+
+      <div id="create-result" class="result" aria-live="polite"></div>
+    </section>
+
+    <section class="card" aria-labelledby="h-get">
+      <h2 id="h-get">Consultar pedido <code>GET /orders/{id}</code></h2>
+      <form id="get-form" class="inline" novalidate>
+        <label class="grow">Id del pedido (UUID)
+          <input id="order-id" type="text" autocomplete="off" placeholder="00000000-0000-0000-0000-000000000000" spellcheck="false">
+        </label>
+        <button type="submit" class="btn-primary">Consultar</button>
+      </form>
+
+      <div id="get-result" class="result" aria-live="polite"></div>
+
+      <h3>Pedidos creados desde esta página <button type="button" id="clear-history" class="link">borrar historial</button></h3>
+      <ul id="history" class="history"></ul>
+      <p id="history-empty" class="muted">Todavía no has creado ninguno. Se guardan solo en este navegador.</p>
+    </section>
+
+    <section class="card" aria-labelledby="h-next">
+      <h2 id="h-next">¿Y la notificación?</h2>
+      <p>La API responde <code>201</code> en cuanto guarda el pedido y su evento en una sola transacción. El resto ocurre
+        <strong>después y en otro servicio</strong>: el worker lee el outbox, lo encola en Redis y "envía" la notificación
+        (hoy, una línea de log). Esta página no puede verlo porque la API no expone ese estado; compruébalo así:</p>
+
+      <div class="cmd">
+        <span class="muted">Docker Compose · notificaciones enviadas</span>
+        <pre><code id="cmd-logs">docker compose logs notifier-worker --no-log-prefix | grep notificación</code></pre>
+        <button type="button" class="btn-secondary copy" data-copy="cmd-logs">Copiar</button>
+      </div>
+      <div class="cmd">
+        <span class="muted">Estado del evento en el outbox (pendiente = <code>published_at</code> nulo)</span>
+        <pre><code id="cmd-psql">docker compose exec postgres psql -U orders -d orders -c "SELECT event_type, published_at IS NOT NULL AS publicado, attempts FROM outbox_events ORDER BY created_at DESC LIMIT 10;"</code></pre>
+        <button type="button" class="btn-secondary copy" data-copy="cmd-psql">Copiar</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="muted">
+    Esta página solo existe si <code>ENABLE_TEST_UI=true</code>. En los manifiestos de Kubernetes está apagada.
+  </footer>
+</body>
+</html>

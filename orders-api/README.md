@@ -18,6 +18,7 @@ Módulo: `github.com/rianeiromiron/go-outbox-orders/orders-api`
 | `GET` | `/orders/{id}` | `200`; `400` id no es UUID; `404` |
 | `GET` | `/healthz` | `200` (el proceso vive) |
 | `GET` | `/readyz` | `200` / `503` (responde la base de datos) |
+| `GET` | `/ui/` | Página HTML de prueba. **Solo existe con `ENABLE_TEST_UI=true`** (ver "Página de prueba"); si no, `404` |
 
 Todos los errores tienen la misma forma. Los `500` nunca exponen detalles
 internos (van al log con el `request_id`):
@@ -42,6 +43,7 @@ internal/config/       variables de entorno
 internal/order/        modelo + validación, repositorio (SQL), servicio (transacción)
 internal/outbox/       Record: inserta el evento dentro de la transacción del llamador
 internal/httpapi/      router chi, handlers, errores JSON, middleware
+internal/testui/       página HTML de prueba (embebida), solo con ENABLE_TEST_UI=true
 internal/platform/postgres/   pool pgx, DBTX, Migrate
 internal/testdb/       Postgres real con testcontainers para los tests
 ```
@@ -66,6 +68,51 @@ internal/testdb/       Postgres real con testcontainers para los tests
 |---|---|---|
 | `DATABASE_URL` | sí | — |
 | `HTTP_ADDR` | no | `:8080` |
+| `ENABLE_TEST_UI` | no | `false` |
+
+## Página de prueba
+
+Además de `curl`, hay una página HTML para probar la API desde el navegador:
+**http://localhost:8081/ui/** (con `make up` o `make run-orders-api`; `/` redirige
+a ella). Permite:
+
+- **Crear pedidos** con un formulario (items dinámicos, total calculado al
+  momento), con botones de "Ejemplo válido" y "Ejemplo inválido (422)" para ver
+  cómo se listan **todos** los errores de validación a la vez.
+- **Consultar pedidos** por id, con el historial de los creados desde la página
+  (se guarda solo en ese navegador).
+- **Enviar N pedidos aleatorios en serie**, útil para ver cómo el worker los
+  reparte (`docker compose logs notifier-worker`).
+- **Copiar la petición como `curl`** y ver el estado de la API (`/readyz`).
+
+Decisiones de diseño:
+
+- **Apagada por defecto.** Una API "de producción" no debe traer una UI de
+  pruebas sin pedirlo: solo `docker-compose.yml` y el `Makefile` ponen
+  `ENABLE_TEST_UI=true`. Los manifiestos de Kubernetes **no** la activan.
+- **Mismo origen que la API** (va embebida en el binario con `go:embed`): no hace
+  falta CORS ni abrir la API a otros orígenes.
+- **Sin dependencias externas** (ni CDNs ni librerías) y con una política de
+  seguridad de contenido estricta (`default-src 'none'; script-src 'self'; …`,
+  sin scripts ni estilos en línea, sin iframes).
+- **Nada de HTML dinámico.** Lo que devuelve la API (por ejemplo el `sku`, que se
+  devuelve tal cual) se inserta siempre como texto, nunca como HTML.
+
+La página **no muestra la notificación** del pedido: la API no expone ese estado
+(ocurre después y en otro servicio). Al final de la página hay los comandos para
+verlo en los logs del worker y en el outbox.
+
+**Cómo se verificó.** Los tests de Go del repositorio solo comprueban invariantes
+estáticos de la página (qué se sirve, con qué cabeceras, y que el HTML/JS no
+contengan nada prohibido por la CSP). **El comportamiento del JavaScript se probó
+con un navegador real** (Edge controlado con `puppeteer-core`; 33 comprobaciones:
+flujo completo, validación 422, consulta 200/404/400, envío en serie, copiar como
+`curl`, un intento de inyección de HTML por el `sku`, un fallo de red simulado,
+ausencia de errores de consola y de violaciones de la CSP, y de scroll horizontal
+en escritorio y móvil), y se comprobó en el backend que los 8 pedidos creados por
+la página produjeron 8 notificaciones. **Ese script no forma parte del
+repositorio ni del CI**: si se cambia el JavaScript, hay que volver a probarlo a
+mano.
 
 ## Cómo probarlo de forma aislada
 
@@ -147,6 +194,8 @@ Los tests de integración levantan su propio PostgreSQL con testcontainers
 | **Dos caminos de emisión → un solo evento**: secuencial y con 20 emisores concurrentes | `TestReemitCreated_*`, `TestRecord_SequentialDuplicateIsAbsorbed`, `TestRecord_ConcurrentDuplicatesProduceOneRow` |
 | La clave no fusiona eventos distintos | `TestRecord_DifferentKeysAreNotDeduplicated` |
 | Contrato HTTP, validación, errores, probes | `handlers_test.go`, `model_test.go` |
+| La página de prueba **no se expone por defecto**, y con la opción no tapa las rutas de la API | `internal/httpapi/ui_test.go` |
+| Página de prueba: tipos MIME, cabeceras de seguridad (CSP sin `unsafe-inline`), sin scripts/estilos/manejadores en línea ni recursos externos, sin `innerHTML`/`eval`, cada `$('id')` del JS existe en el HTML, sin path traversal | `internal/testui/testui_test.go` |
 
 Los tests de atomicidad y deduplicación se comprobaron con **mutación**:
 usar el pool en vez de la transacción hace fallar los tests de rollback, y

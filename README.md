@@ -86,6 +86,7 @@ go-outbox-orders/
 │       │   └── repository.go    # SQL con pgx
 │       ├── outbox/              # insertar evento dentro de un pgx.Tx dado (dedupe)
 │       ├── httpapi/             # router chi, handlers, middleware, errores JSON
+│       ├── testui/              # página HTML de prueba (embebida; solo con ENABLE_TEST_UI=true)
 │       ├── platform/postgres/   # pgxpool + DBTX + Migrate
 │       └── testdb/              # Postgres real (testcontainers) para los tests
 │
@@ -326,7 +327,9 @@ make logs    # sigue los logs
 make down    # detiene y elimina contenedores y red; los datos (volúmenes) se conservan
 ```
 
-Probar el flujo completo:
+Probar el flujo completo, con la **página de prueba** en el navegador
+(**http://localhost:8081/ui/**: formulario, consulta de pedidos, envío en serie y
+copiar como `curl`; ver el [README de orders-api](orders-api/README.md)) o con `curl`:
 
 ```bash
 curl -s -X POST http://localhost:8081/orders -d '{

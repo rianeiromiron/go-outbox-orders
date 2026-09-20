@@ -5,6 +5,7 @@ MODULES := orders-api notifier-worker
 # Conexión al Postgres de docker-compose.yml (puerto 5433 en el host).
 export DATABASE_URL ?= postgres://orders:orders@localhost:5433/orders?sslmode=disable
 export HTTP_ADDR ?= :8081
+export ENABLE_TEST_UI ?= true # página de prueba en http://localhost:8081/ui/ (solo desarrollo local)
 export REDIS_ADDR ?= localhost:6380
 
 # --- Kubernetes (kind) ---

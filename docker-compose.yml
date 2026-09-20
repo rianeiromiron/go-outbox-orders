@@ -97,6 +97,7 @@ services:
     environment:
       DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
       HTTP_ADDR: ":8080"
+      ENABLE_TEST_UI: "true" # página de prueba en http://localhost:8081/ui/ (solo desarrollo; apagada por defecto)
     ports:
       - "127.0.0.1:8081:8080" # 8081 en el host (8080 lo usan otros proyectos)
     depends_on:

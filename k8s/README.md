@@ -66,6 +66,10 @@ El clúster es **nuevo y aislado**; no reutiliza nada de otros proyectos:
   `/readyz` comprueba las dependencias (Postgres; y Redis en el worker). Si
   Redis se cae, los workers pasan a `NotReady` pero **no se reinician**:
   reiniciarlos no arregla Redis y solo generaría reinicios en cadena.
+- **La página de prueba de la API está apagada.** `orders-api` puede servir una
+  página HTML de prueba (`ENABLE_TEST_UI=true`), pero solo Docker Compose la
+  activa; estos manifiestos **no** ponen esa variable, así que en Kubernetes `/ui/`
+  responde `404`.
 - **UID numérico.** Las imágenes declaran `USER app` (por nombre) y el kubelet no
   puede verificar `runAsNonRoot` con un nombre; los manifiestos fijan
   `runAsUser: 10001`.

@@ -41,10 +41,16 @@ func run(log *slog.Logger) error {
 	}
 	defer pool.Close()
 
+	var opts []httpapi.Option
+	if cfg.EnableTestUI {
+		opts = append(opts, httpapi.WithTestUI())
+		log.Warn("página de prueba habilitada en /ui/ (ENABLE_TEST_UI=true): solo para desarrollo local")
+	}
+
 	svc := order.NewService(pool, outbox.Store{})
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewRouter(svc, pool.Ping, log),
+		Handler:           httpapi.NewRouter(svc, pool.Ping, log, opts...),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
