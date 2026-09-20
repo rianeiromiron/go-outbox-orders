@@ -1,0 +1,21 @@
+# golangci-lint v2. Se ejecuta por módulo (cada servicio tiene su go.mod):
+#   cd orders-api && golangci-lint run ./...
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - errorlint # errores comparados/envueltos con errors.Is/As y %w
+    - bodyclose # cuerpos de respuesta HTTP sin cerrar
+    - noctx # peticiones HTTP sin context
+    - rowserrcheck # rows.Err() sin comprobar (pgx/sql)
+    - sqlclosecheck # rows/statements sin cerrar
+    - nilerr # devolver nil cuando err != nil
+    - unconvert # conversiones innecesarias
+    - copyloopvar # copias innecesarias de la variable del for (Go ≥ 1.22)
+    - usestdlibvars # http.MethodGet en vez de "GET"
+    - gocritic # incl. exitAfterDefer: os.Exit que se salta los defer
+
+formatters:
+  enable:
+    - gofmt

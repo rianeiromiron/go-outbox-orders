@@ -114,7 +114,7 @@ func Redis(t testing.TB) string {
 	}
 
 	rdb := redis.NewClient(&redis.Options{Addr: rdbAddr})
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 	if err := rdb.FlushAll(context.Background()).Err(); err != nil {
 		t.Fatalf("testenv: FLUSHALL: %v", err)
 	}

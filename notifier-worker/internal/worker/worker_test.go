@@ -39,7 +39,7 @@ func start(t *testing.T, notifier *testenv.RecordingNotifier, batchSize int) *en
 	redisOpt := asynq.RedisClientOpt{Addr: addr}
 
 	rdb := redis.NewClient(&redis.Options{Addr: addr})
-	t.Cleanup(func() { rdb.Close() })
+	t.Cleanup(func() { _ = rdb.Close() })
 
 	srv, err := worker.Start(redisOpt, &handlers.OrderCreated{
 		Notifier: notifier,
@@ -57,9 +57,9 @@ func start(t *testing.T, notifier *testenv.RecordingNotifier, batchSize int) *en
 	t.Cleanup(srv.Shutdown)
 
 	client := asynq.NewClient(redisOpt)
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 	inspector := asynq.NewInspector(redisOpt)
-	t.Cleanup(func() { inspector.Close() })
+	t.Cleanup(func() { _ = inspector.Close() })
 
 	return &env{
 		db: db, client: client, inspector: inspector, notifier: notifier,

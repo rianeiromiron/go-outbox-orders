@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Permisos mínimos: el CI solo lee el repositorio.
+permissions:
+  contents: read
+
+# Un push nuevo a la misma rama cancela la ejecución anterior que siga en curso.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Cada servicio es un módulo Go independiente (go.mod propio), así que lint y
+  # tests corren una vez por módulo. La versión de Go sale del go.mod de cada uno.
+  lint:
+    name: lint (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [orders-api, notifier-worker]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Archivos sin formatear:"; echo "$unformatted"; gofmt -d .; exit 1
+          fi
+
+      - name: go mod tidy no debe cambiar nada
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2
+          working-directory: ${{ matrix.module }}
+
+  # Los tests de integración levantan su propio PostgreSQL y Redis con
+  # testcontainers; los runners de GitHub traen Docker. -race necesita cgo, que
+  # en ubuntu-latest está disponible (en la máquina de desarrollo actual no).
+  test:
+    name: test (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [orders-api, notifier-worker]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: go test -race
+        run: go test -race -count=1 -timeout 10m ./...
+
+  # Humo del stack completo: construye las imágenes, levanta todo con Compose,
+  # comprueba el flujo pedido → outbox → notificación y que TODOS los
+  # contenedores estén únicamente en la red outbox-net.
+  compose:
+    name: compose (stack completo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validar docker-compose.yml
+        run: docker compose config -q
+
+      - name: Construir y levantar el stack
+        run: docker compose up -d --build --wait
+
+      - name: Todos los contenedores están solo en outbox-net
+        run: |
+          fail=0
+          for c in $(docker compose ps -a -q); do
+            name="$(docker inspect -f '{{.Name}}' "$c")"
+            nets="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$c")"
+            echo "$name -> $nets"
+            [ "$nets" = "outbox-net " ] || { echo "::error::$name no está solo en outbox-net"; fail=1; }
+          done
+          exit "$fail"
+
+      - name: Un pedido produce una notificación
+        run: |
+          curl -fsS -X POST http://localhost:8081/orders \
+            -H 'Content-Type: application/json' \
+            -d '{"customer_email":"ci@example.com","currency":"USD","items":[{"sku":"SKU-1","quantity":2,"unit_price_cents":1500}]}'
+          echo
+          for i in $(seq 1 30); do
+            if docker compose logs notifier-worker --no-log-prefix | grep -q "notificación enviada"; then
+              echo "notificación recibida tras ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::no apareció la notificación en 30 s"; exit 1
+
+      - name: Logs del stack (solo si falló)
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Apagar y borrar el stack
+        if: always()
+        run: docker compose down -v

@@ -1,5 +1,7 @@
 # go-outbox-orders
 
+[![CI](https://github.com/rianeiromiron/go-outbox-orders/actions/workflows/ci.yml/badge.svg)](https://github.com/rianeiromiron/go-outbox-orders/actions/workflows/ci.yml)
+
 Sistema de práctica en Go que replica, en Go, un sistema previamente
 construido en Python (Django + DRF + FastAPI + Celery/Redis + Outbox
 pattern + Docker Compose + Kubernetes + LocalStack/Terraform).
@@ -220,9 +222,15 @@ con `depends_on` (`service_healthy` y `service_completed_successfully`).
 desde cero y el flujo funciona — verificado, incluyendo apagado con SIGTERM,
 recuperación del backlog con el worker caído y persistencia tras `down`/`up`.
 
-**Fase 4 — CI (GitHub Actions).** `go vet`, `golangci-lint`, `go test` por
-módulo (con servicios Postgres/Redis), build de imágenes. Requiere
-subir el repo a GitHub.
+**Fase 4 — CI (GitHub Actions) (en curso: pendiente de confirmar la primera
+ejecución en GitHub).** Workflow `.github/workflows/ci.yml` con tres tipos de
+job: `lint` (gofmt, `go mod tidy` sin cambios, `go vet`, golangci-lint v2) y
+`test` (`go test -race`) por módulo, y `compose`, que levanta el stack
+completo y comprueba el flujo y la red. Ver "Integración continua" abajo.
+Al preparar la fase, el linter encontró y se corrigieron 10 hallazgos: 8
+`Close()` sin comprobar, un `os.Exit` en `cmd/migrate` que se saltaba los
+`defer` (cerrar el pool, cancelar el contexto) y un `httptest.NewRequest` sin
+context.
 
 **Fase 5 — Kubernetes.** Manifiestos en `k8s/` (namespace, Deployments,
 Services, ConfigMap/Secret, probes, Job de migración). Se probará en `kind`
@@ -327,6 +335,47 @@ No mezcles los dos modos a la vez: ambos usan los puertos `5433`, `6380` y
 `8081`. Detalle, ejemplos y qué cubre cada test:
 [orders-api/README.md](orders-api/README.md) y
 [notifier-worker/README.md](notifier-worker/README.md).
+
+## Integración continua
+
+Se ejecuta en cada push a `master` y en cada pull request
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)); un push nuevo a la
+misma rama cancela la ejecución anterior. Permisos mínimos (`contents: read`).
+
+| Job | Qué comprueba |
+|---|---|
+| `lint` (uno por módulo) | `gofmt`; `go mod tidy` no cambia `go.mod`/`go.sum`; `go vet`; `golangci-lint` v2.13.2 con [`.golangci.yml`](.golangci.yml) (linters estándar + errorlint, bodyclose, noctx, rowserrcheck, sqlclosecheck, nilerr, unconvert, copyloopvar, usestdlibvars, gocritic) |
+| `test` (uno por módulo) | `go test -race` de todo, incluidos los tests de integración (testcontainers, los runners de GitHub traen Docker) |
+| `compose` | `docker compose config`, construye las imágenes y levanta el stack; comprueba que **todos los contenedores están solo en `outbox-net`**; crea un pedido y espera la notificación en el worker |
+
+La versión de Go de cada job sale del `go.mod` del módulo (`go-version-file`).
+
+Lo mismo en local:
+
+```bash
+make fmt-check   # gofmt
+make vet
+make lint        # requiere golangci-lint v2 (go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2)
+make test
+```
+
+`-race` necesita cgo (un compilador de C). En Linux/macOS funciona directo; en
+Windows sin `gcc` no está disponible, pero se puede ejecutar dentro de un
+contenedor Linux efímero que use el Docker local (así se probó en la Fase 4;
+en Git Bash de Windows hace falta `MSYS_NO_PATHCONV=1`):
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm \
+  -v "$(pwd -W):/src" -v /var/run/docker.sock:/var/run/docker.sock \
+  -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+  -e GOWORK=off -e GOTOOLCHAIN=local -e GOFLAGS=-buildvcs=false \
+  golang:1.26-alpine sh -c 'apk add --no-cache build-base >/dev/null &&
+    for m in orders-api notifier-worker; do (cd /src/$m && go test -race -count=1 ./...); done'
+```
+
+(`pwd -W` da la ruta estilo Windows en Git Bash; en Linux/macOS usa `$PWD`.)
+Sin caché de módulos, tarda unos minutos porque descarga las dependencias en
+cada ejecución.
 
 ## Notas de diseño
 

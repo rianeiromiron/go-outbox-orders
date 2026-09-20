@@ -7,13 +7,20 @@ export DATABASE_URL ?= postgres://orders:orders@localhost:5433/orders?sslmode=di
 export HTTP_ADDR ?= :8081
 export REDIS_ADDR ?= localhost:6380
 
-.PHONY: build vet test tidy up down logs ps db-up db-down migrate run-orders-api run-notifier-worker
+.PHONY: build vet lint fmt-check test tidy up down logs ps db-up db-down migrate run-orders-api run-notifier-worker
 
 build:
 	@for m in $(MODULES); do echo "==> build $$m"; (cd $$m && go build ./...) || exit 1; done
 
 vet:
 	@for m in $(MODULES); do echo "==> vet $$m"; (cd $$m && go vet ./...) || exit 1; done
+
+# Lo mismo que revisa el CI (requiere golangci-lint v2 instalado; ver README).
+lint:
+	@for m in $(MODULES); do echo "==> lint $$m"; (cd $$m && golangci-lint run ./...) || exit 1; done
+
+fmt-check:
+	@out="$$(gofmt -l $(MODULES))"; if [ -n "$$out" ]; then echo "Sin formatear:"; echo "$$out"; exit 1; fi
 
 # Los tests de integración levantan su propio Postgres con testcontainers
 # (requieren Docker); no dependen de db-up.

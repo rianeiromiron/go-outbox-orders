@@ -22,7 +22,7 @@ import (
 func setup(t *testing.T, lease time.Duration, n *testenv.RecordingNotifier) (*handlers.OrderCreated, *redis.Client) {
 	t.Helper()
 	rdb := redis.NewClient(&redis.Options{Addr: testenv.Redis(t)})
-	t.Cleanup(func() { rdb.Close() })
+	t.Cleanup(func() { _ = rdb.Close() })
 	return &handlers.OrderCreated{
 		Notifier: n,
 		Guard:    idempotency.New(rdb, "test", lease, time.Hour),

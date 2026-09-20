@@ -38,7 +38,9 @@ func NewPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 // Migrate aplica todas las migraciones pendientes (goose, SQL embebido).
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	db := stdlib.OpenDBFromPool(pool)
-	defer db.Close() // no cierra el pool: eso es responsabilidad de quien lo creó
+	// Cerrar el *sql.DB no cierra el pool (eso es responsabilidad de quien lo
+	// creó); un error al cerrar el envoltorio no es accionable.
+	defer func() { _ = db.Close() }()
 
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
 	if err != nil {

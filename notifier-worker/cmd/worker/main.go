@@ -55,14 +55,14 @@ func run(log *slog.Logger) error {
 	}
 
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }() // en el apagado un error al cerrar no es accionable
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		return fmt.Errorf("redis: ping: %w", err)
 	}
 
 	redisOpt := asynq.RedisClientOpt{Addr: cfg.RedisAddr}
 	client := asynq.NewClient(redisOpt)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	handler := &handlers.OrderCreated{
 		Notifier: notify.LogNotifier{Log: log},

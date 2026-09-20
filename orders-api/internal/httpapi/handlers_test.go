@@ -41,7 +41,7 @@ func newRouter(t *testing.T, ping func(context.Context) error) (http.Handler, *p
 }
 
 func do(h http.Handler, method, path, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
