@@ -22,23 +22,25 @@ en PostgreSQL y una cola en Redis:
   publica los eventos a Redis, y los consume con Asynq para simular el
   envío de notificaciones.
 
-Flujo (borrador; el diagrama definitivo se agrega cuando el flujo
-funcione end-to-end):
+Flujo:
 
 ```
 cliente ──POST /orders──▶ orders-api ──┐ una sola transacción
                                        ▼
                                PostgreSQL
                           ┌─ orders / order_items
-                          └─ outbox_events (published_at IS NULL)
+                          └─ outbox_events      ◀─ capa 1: UNIQUE(dedupe_key)
                                        │
               polling (FOR UPDATE SKIP LOCKED)
                                        ▼
-                             notifier-worker
-                          ┌─ poller ──enqueue──▶ Redis (Asynq)
+                        notifier-worker (N réplicas)
+                          ┌─ poller ──enqueue──▶ Redis (Asynq)  ◀─ capa 2: TaskID = id del evento
                           └─ asynq.Server ◀────── Redis
-                                   └─▶ handler "envía" la notificación (log)
+                                   └─▶ handler ─▶ guard en Redis  ◀─ capa 3: una vez por event_id
+                                                   └─▶ "envía" la notificación (log)
 ```
+
+Las tres capas de deduplicación se explican en "Notas de diseño".
 
 Garantía de entrega: **at-least-once**. El poller puede publicar un evento
 y caer antes de marcarlo como publicado, así que el handler debe ser
