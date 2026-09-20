@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 745" width="1100" height="745" role="img" aria-labelledby="t d">
+  <title id="t">Flujo de un pedido en go-outbox-orders</title>
+  <desc id="d">Un cliente hace POST /orders a orders-api, que guarda el pedido y el evento en PostgreSQL en una sola transacción. El poller del notifier-worker lee los eventos pendientes de outbox_events con FOR UPDATE SKIP LOCKED y los encola en Redis con Asynq. El handler de Asynq los consume y, a través de un guard de idempotencia en Redis, envía la notificación. Tres capas evitan duplicados: la clave única en el outbox, el TaskID de Asynq y el guard de idempotencia.</desc>
+
+  <style>
+    :root {
+      --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --line: #6e7781;
+      --box: #f6f8fa; --box-stroke: #b6bcc4;
+      --pg: #eaf3ff; --pg-stroke: #7ab0ee;
+      --wk: #fff6e5; --wk-stroke: #e3b04b;
+      --rd: #fdecec; --rd-stroke: #e08a8a;
+      --hot: #ddf4ff; --hot-stroke: #0969da;
+      --c1: #8250df; --c2: #bf3989; --c3: #1a7f37; --numfg: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #8b949e;
+        --box: #161b22; --box-stroke: #3d444d;
+        --pg: #0d2340; --pg-stroke: #2f6db5;
+        --wk: #2b2110; --wk-stroke: #9a7420;
+        --rd: #331617; --rd-stroke: #a4494b;
+        --hot: #0c2d48; --hot-stroke: #4493f8;
+        --c1: #ab7df8; --c2: #f778ba; --c3: #3fb950; --numfg: #0d1117;
+      }
+    }
+    text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--fg); }
+    .b  { font-weight: 600; font-size: 15px; }
+    .s  { font-size: 13px; fill: var(--muted); }
+    .lg { font-size: 14px; }
+    .box  { fill: var(--box); stroke: var(--box-stroke); stroke-width: 1.5; }
+    .pg   { fill: var(--pg);  stroke: var(--pg-stroke); stroke-width: 1.5; }
+    .wk   { fill: var(--wk);  stroke: var(--wk-stroke); stroke-width: 1.5; }
+    .rd   { fill: var(--rd);  stroke: var(--rd-stroke); stroke-width: 1.5; }
+    .hot  { fill: var(--hot); stroke: var(--hot-stroke); stroke-width: 2; }
+    .arrow { stroke: var(--line); stroke-width: 2; fill: none; }
+    .dot  { stroke: none; }
+    .num  { font-size: 13px; font-weight: 700; fill: var(--numfg); }
+  </style>
+
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+
+  <rect width="1100" height="745" rx="14" fill="var(--bg)"/>
+
+  <!-- ===== Fila 1: cliente → orders-api → PostgreSQL ===== -->
+  <rect class="box" x="20" y="95" width="120" height="70" rx="10"/>
+  <text class="b" x="80" y="126" text-anchor="middle">Cliente</text>
+  <text class="s" x="80" y="148" text-anchor="middle">curl / HTTP</text>
+
+  <line class="arrow" x1="140" y1="130" x2="238" y2="130" marker-end="url(#ah)"/>
+  <text class="s" x="189" y="119" text-anchor="middle">POST /orders</text>
+
+  <rect class="box" x="240" y="85" width="150" height="90" rx="10"/>
+  <text class="b" x="315" y="123" text-anchor="middle">orders-api</text>
+  <text class="s" x="315" y="145" text-anchor="middle">API HTTP · 2 réplicas</text>
+
+  <line class="arrow" x1="390" y1="130" x2="538" y2="130" marker-end="url(#ah)"/>
+  <text class="s" x="464" y="119" text-anchor="middle">una transacción</text>
+
+  <rect class="pg" x="540" y="45" width="240" height="160" rx="12"/>
+  <text class="b" x="560" y="71">PostgreSQL</text>
+  <rect class="box" x="560" y="85" width="200" height="36" rx="8"/>
+  <text class="lg" x="660" y="108" text-anchor="middle">orders · order_items</text>
+  <rect class="hot" x="560" y="133" width="200" height="56" rx="8"/>
+  <text class="b" x="660" y="158" text-anchor="middle">outbox_events</text>
+  <text class="s" x="660" y="177" text-anchor="middle">eventos pendientes</text>
+
+  <!-- capa 1 -->
+  <circle class="dot" cx="760" cy="133" r="13" fill="var(--c1)"/>
+  <text class="num" x="760" y="138" text-anchor="middle">1</text>
+
+  <!-- ===== Fila 2: notifier-worker ===== -->
+  <rect class="wk" x="50" y="290" width="1000" height="190" rx="12"/>
+  <text class="b" x="1030" y="314" text-anchor="end">notifier-worker · N réplicas</text>
+
+  <!-- ===== PostgreSQL → poller (se dibuja DESPUÉS del contenedor para no quedar tapada) ===== -->
+  <path class="arrow" d="M 660 205 V 250 H 170 V 338" marker-end="url(#ah)"/>
+  <text class="s" x="415" y="241" text-anchor="middle">polling · FOR UPDATE SKIP LOCKED</text>
+
+  <rect class="box" x="80" y="340" width="180" height="80" rx="8"/>
+  <text class="b" x="170" y="366" text-anchor="middle">poller</text>
+  <text class="s" x="170" y="387" text-anchor="middle">lee outbox_events</text>
+  <text class="s" x="170" y="405" text-anchor="middle">por lotes, cada 1 s</text>
+
+  <rect class="box" x="340" y="340" width="190" height="80" rx="8"/>
+  <text class="b" x="435" y="366" text-anchor="middle">asynq server + handler</text>
+  <text class="s" x="435" y="387" text-anchor="middle">consume order.created</text>
+  <text class="s" x="435" y="405" text-anchor="middle">reintenta con backoff</text>
+
+  <rect class="box" x="610" y="340" width="180" height="80" rx="8"/>
+  <text class="b" x="700" y="366" text-anchor="middle">guard de idempotencia</text>
+  <text class="s" x="700" y="387" text-anchor="middle">una vez por event_id</text>
+
+  <rect class="box" x="870" y="340" width="150" height="80" rx="8"/>
+  <text class="b" x="945" y="373" text-anchor="middle">Notificación</text>
+  <text class="s" x="945" y="394" text-anchor="middle">hoy: una línea de log</text>
+
+  <line class="arrow" x1="530" y1="380" x2="608" y2="380" marker-end="url(#ah)"/>
+  <line class="arrow" x1="790" y1="380" x2="868" y2="380" marker-end="url(#ah)"/>
+
+  <!-- ===== Redis ===== -->
+  <rect class="rd" x="80" y="520" width="710" height="58" rx="10"/>
+  <text class="b" x="435" y="546" text-anchor="middle">Redis</text>
+  <text class="s" x="435" y="565" text-anchor="middle">cola de Asynq · claves done / lock del guard</text>
+
+  <!-- poller → Redis (capa 2) -->
+  <line class="arrow" x1="170" y1="420" x2="170" y2="518" marker-end="url(#ah)"/>
+  <text class="s" x="184" y="503">enqueue · TaskID = id del evento</text>
+  <circle class="dot" cx="170" cy="452" r="13" fill="var(--c2)"/>
+  <text class="num" x="170" y="457" text-anchor="middle">2</text>
+
+  <!-- Redis → handler -->
+  <line class="arrow" x1="435" y1="518" x2="435" y2="422" marker-end="url(#ah)"/>
+  <text class="s" x="449" y="503">consume</text>
+
+  <!-- guard ↔ Redis (capa 3) -->
+  <line class="arrow" x1="700" y1="422" x2="700" y2="518" marker-start="url(#ah)" marker-end="url(#ah)"/>
+  <text class="s" x="714" y="503">done / lock</text>
+  <circle class="dot" cx="700" cy="452" r="13" fill="var(--c3)"/>
+  <text class="num" x="700" y="457" text-anchor="middle">3</text>
+
+  <!-- ===== Leyenda ===== -->
+  <line x1="20" y1="604" x2="1080" y2="604" stroke="var(--box-stroke)" stroke-width="1"/>
+  <text class="b" x="20" y="630">Tres capas contra eventos duplicados</text>
+
+  <circle class="dot" cx="32" cy="655" r="11" fill="var(--c1)"/>
+  <text class="num" x="32" y="660" text-anchor="middle">1</text>
+  <text class="lg" x="56" y="660"><tspan font-weight="600">Emisión (orders-api)</tspan> · UNIQUE(dedupe_key) + ON CONFLICT DO NOTHING: el evento de negocio existe una sola vez.</text>
+
+  <circle class="dot" cx="32" cy="685" r="11" fill="var(--c2)"/>
+  <text class="num" x="32" y="690" text-anchor="middle">2</text>
+  <text class="lg" x="56" y="690"><tspan font-weight="600">Encolado (poller)</tspan> · Asynq rechaza un TaskID repetido mientras conserve la tarea.</text>
+
+  <circle class="dot" cx="32" cy="715" r="11" fill="var(--c3)"/>
+  <text class="num" x="32" y="720" text-anchor="middle">3</text>
+  <text class="lg" x="56" y="720"><tspan font-weight="600">Consumo (handler)</tspan> · el efecto se aplica una sola vez por event_id, con claves done / lock en Redis.</text>
+</svg>

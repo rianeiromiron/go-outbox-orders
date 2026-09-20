@@ -22,23 +22,9 @@ en PostgreSQL y una cola en Redis:
   publica los eventos a Redis, y los consume con Asynq para simular el
   envío de notificaciones.
 
-Flujo:
+Flujo (los círculos numerados marcan las tres capas contra eventos duplicados):
 
-```
-cliente ──POST /orders──▶ orders-api ──┐ una sola transacción
-                                       ▼
-                               PostgreSQL
-                          ┌─ orders / order_items
-                          └─ outbox_events      ◀─ capa 1: UNIQUE(dedupe_key)
-                                       │
-              polling (FOR UPDATE SKIP LOCKED)
-                                       ▼
-                        notifier-worker (N réplicas)
-                          ┌─ poller ──enqueue──▶ Redis (Asynq)  ◀─ capa 2: TaskID = id del evento
-                          └─ asynq.Server ◀────── Redis
-                                   └─▶ handler ─▶ guard en Redis  ◀─ capa 3: una vez por event_id
-                                                   └─▶ "envía" la notificación (log)
-```
+![Flujo de un pedido: el cliente hace POST /orders a orders-api, que guarda el pedido y el evento en PostgreSQL en una sola transacción; el poller del notifier-worker lee outbox_events con FOR UPDATE SKIP LOCKED y encola en Redis con Asynq; el handler consume y, a través de un guard de idempotencia en Redis, envía la notificación.](docs/flujo.svg)
 
 Las tres capas de deduplicación se explican en "Notas de diseño".
 
@@ -83,6 +69,7 @@ go-outbox-orders/
 ├── .gitignore
 ├── README.md
 ├── .github/workflows/ci.yml     # Fase 4
+├── docs/flujo.svg               # diagrama del flujo (SVG, claro/oscuro)
 │
 ├── orders-api/                  # módulo: github.com/rianeiromiron/go-outbox-orders/orders-api
 │   ├── go.mod
