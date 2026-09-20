@@ -50,7 +50,7 @@ idempotente (ver "Notas de diseño").
 - [x] Fase 1 — orders-api (endpoint + outbox pattern)
 - [x] Fase 2 — notifier-worker (Redis + Asynq)
 - [x] Fase 3 — Docker Compose (red aislada `outbox-net`)
-- [ ] Fase 4 — CI con GitHub Actions
+- [x] Fase 4 — CI con GitHub Actions
 - [ ] Fase 5 — Despliegue en Kubernetes
 - [ ] Fase 6 — LocalStack + Terraform (S3)
 
@@ -222,11 +222,14 @@ con `depends_on` (`service_healthy` y `service_completed_successfully`).
 desde cero y el flujo funciona — verificado, incluyendo apagado con SIGTERM,
 recuperación del backlog con el worker caído y persistencia tras `down`/`up`.
 
-**Fase 4 — CI (GitHub Actions) (en curso: pendiente de confirmar la primera
-ejecución en GitHub).** Workflow `.github/workflows/ci.yml` con tres tipos de
-job: `lint` (gofmt, `go mod tidy` sin cambios, `go vet`, golangci-lint v2) y
-`test` (`go test -race`) por módulo, y `compose`, que levanta el stack
-completo y comprueba el flujo y la red. Ver "Integración continua" abajo.
+**Fase 4 — CI (GitHub Actions) (completada).** Workflow
+`.github/workflows/ci.yml` con tres tipos de job: `lint` (gofmt, `go mod tidy`
+sin cambios, `go vet`, golangci-lint v2) y `test` (`go test -race`) por
+módulo, y `compose`, que levanta el stack completo y comprueba el flujo y la
+red. Ver "Integración continua" abajo. *Hecho cuando:* la primera ejecución en
+GitHub salió en verde (5 jobs; los logs confirman Go 1.26.0, `-race` en los 6
+paquetes de tests con Postgres y Redis reales, 0 hallazgos del linter, los 5
+contenedores solo en `outbox-net` y la notificación recibida a los 3 s).
 Al preparar la fase, el linter encontró y se corrigieron 10 hallazgos: 8
 `Close()` sin comprobar, un `os.Exit` en `cmd/migrate` que se saltaba los
 `defer` (cerrar el pool, cancelar el contexto) y un `httptest.NewRequest` sin
