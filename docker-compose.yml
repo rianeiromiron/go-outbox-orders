@@ -8,7 +8,8 @@ name: go-outbox-orders
 #   docker compose up -d --build --wait     (o: make up)
 #
 # Solo se publican en el host, y únicamente en 127.0.0.1, los puertos que sirven
-# para probar desde fuera: 5433 (postgres), 6380 (redis) y 8081 (orders-api).
+# para probar desde fuera: 5433 (postgres), 6380 (redis), 8081 (orders-api) y
+# 4567 (localstack).
 # Entre contenedores todo se habla por nombre de servicio dentro de outbox-net.
 
 services:
@@ -42,6 +43,35 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
+    networks:
+      - outbox-net
+
+  # AWS simulado (solo S3) para practicar infraestructura como código con
+  # Terraform (ver terraform/). Instancia NUEVA de este proyecto, sin relación con
+  # ningún LocalStack de otros proyectos.
+  #
+  # VERSIÓN FIJADA A PROPÓSITO: 4.14.0 (feb 2026) es la última versión que arranca
+  # sin cuenta ni token. Desde 2026.03 (versionado por calendario, p. ej. 2026.8.3)
+  # la imagen sale con "License activation failed" (código 55) si no hay
+  # LOCALSTACK_AUTH_TOKEN. No la actualices sin decidir cómo gestionar ese token.
+  localstack:
+    image: localstack/localstack:4.14.0
+    environment:
+      SERVICES: s3
+    ports:
+      - "127.0.0.1:4567:4566" # 4567 en el host: el 4566 lo usa otro proyecto
+    # La imagen declara un VOLUME anónimo en /var/lib/localstack; sin esto, cada
+    # `down` + `up` dejaría un volumen huérfano más. El estado de LocalStack es
+    # efímero a propósito (Terraform lo recrea), así que va en memoria.
+    tmpfs:
+      - /var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health | grep -Eq '\"s3\": \"(available|running)\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     restart: unless-stopped
     networks:
       - outbox-net

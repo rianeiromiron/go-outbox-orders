@@ -116,7 +116,7 @@ Compose la publica como `127.0.0.1:8081`. Su `healthcheck` consulta `/readyz`
 (incluye la conexión a la base de datos).
 
 ```bash
-make up          # desde la raíz: postgres, redis, migrate, orders-api y notifier-worker en outbox-net
+make up          # desde la raíz: postgres, redis, localstack, migrate, orders-api y notifier-worker en outbox-net
 curl -s http://localhost:8081/readyz
 make down
 ```
@@ -157,5 +157,6 @@ Notas:
   `t.Parallel`** (cada test parte de tablas vacías).
 - Los contenedores de testcontainers usan la red `bridge` por defecto de
   Docker, son efímeros y no forman parte de `outbox-net`.
-- `-race` no está disponible en la máquina de desarrollo actual (Windows sin
-  `gcc`); no se ha ejecutado.
+- `-race` necesita cgo (`gcc`), que no hay en Windows por defecto: se ejecuta
+  en el CI (`go test -race`) y se probó también dentro de un contenedor Linux
+  (ver "Integración continua" en el README raíz).

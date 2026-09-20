@@ -35,3 +35,7 @@ Thumbs.db
 
 # kubeconfig propio del clúster kind de este proyecto
 .kube/
+
+# Planes de Terraform guardados con -out (pueden contener valores sensibles)
+tfplan
+*.tfplan

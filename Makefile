@@ -17,7 +17,8 @@ KUBECTL := kubectl --kubeconfig $(K8S_KUBECONFIG)
 IMAGES := go-outbox-orders/orders-api:dev go-outbox-orders/notifier-worker:dev
 
 .PHONY: build vet lint fmt-check test tidy up down logs ps db-up db-down migrate run-orders-api run-notifier-worker \
-        k8s-cluster k8s-images k8s-up k8s-status k8s-down k8s-delete-cluster
+        k8s-cluster k8s-images k8s-up k8s-status k8s-down k8s-delete-cluster \
+        localstack-up tf-init tf-fmt tf-test tf-plan tf-apply tf-destroy
 
 build:
 	@for m in $(MODULES); do echo "==> build $$m"; (cd $$m && go build ./...) || exit 1; done
@@ -40,7 +41,7 @@ test:
 tidy:
 	@for m in $(MODULES); do echo "==> tidy $$m"; (cd $$m && go mod tidy) || exit 1; done
 
-# Stack completo en Docker (postgres, redis, migrate, orders-api, notifier-worker),
+# Stack completo en Docker (postgres, redis, localstack, migrate, orders-api, notifier-worker),
 # todo en la red outbox-net. La API queda en http://localhost:8081.
 up:
 	docker compose up -d --build --wait
@@ -104,3 +105,29 @@ k8s-down:
 k8s-delete-cluster:
 	kind delete cluster --name $(K8S_CLUSTER) --kubeconfig $(K8S_KUBECONFIG)
 	-docker network rm $(K8S_NETWORK)
+
+# ---- Terraform + LocalStack ----
+# LocalStack (S3 simulado) es un servicio del docker-compose.yml, en la red outbox-net,
+# y publica el puerto 4567 en el host. Terraform corre en el host y apunta a ese puerto.
+
+localstack-up:
+	docker compose up -d --wait localstack
+
+tf-init:
+	cd terraform && terraform init -input=false
+
+tf-fmt:
+	cd terraform && terraform fmt -check -recursive
+
+# No necesita LocalStack: usa un provider simulado.
+tf-test: tf-init
+	cd terraform && terraform test
+
+tf-plan: localstack-up tf-init
+	cd terraform && terraform plan -input=false
+
+tf-apply: localstack-up tf-init
+	cd terraform && terraform apply -input=false
+
+tf-destroy: localstack-up tf-init
+	cd terraform && terraform destroy -input=false

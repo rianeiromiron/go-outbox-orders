@@ -76,7 +76,7 @@ despliegan por separado.
 ```
 go-outbox-orders/
 ├── go.work                      # use ./orders-api ./notifier-worker (solo dev local)
-├── docker-compose.yml           # stack completo en la red outbox-net: postgres, redis, migrate, orders-api, notifier-worker
+├── docker-compose.yml           # stack completo en la red outbox-net: postgres, redis, localstack, migrate, orders-api, notifier-worker
 ├── Makefile                     # build, vet, lint, test, up/down (Compose), db-up/db-down, run-*, k8s-*
 ├── .gitignore
 ├── README.md
@@ -122,7 +122,10 @@ go-outbox-orders/
 │   ├── postgres.yaml, redis.yaml            # StatefulSets con PVC
 │   ├── migrate-job.yaml                     # Job de migración
 │   └── orders-api.yaml, notifier-worker.yaml  # Deployments (2 réplicas) y sondas
-└── terraform/                   # Fase 6 (provider AWS apuntando a LocalStack)
+└── terraform/                   # Fase 6: bucket S3 en LocalStack (ver terraform/README.md)
+    ├── versions.tf, variables.tf, main.tf, outputs.tf
+    ├── .terraform.lock.hcl      # provider fijado, hashes para Windows/Linux/macOS
+    └── tests/receipts.tftest.hcl  # terraform test con provider simulado
 ```
 
 Decisiones de estructura:
@@ -229,7 +232,7 @@ desde cero y el flujo funciona — verificado, incluyendo apagado con SIGTERM,
 recuperación del backlog con el worker caído y persistencia tras `down`/`up`.
 
 **Fase 4 — CI (GitHub Actions) (completada).** Workflow
-`.github/workflows/ci.yml` con cuatro tipos de job: `lint` (gofmt, `go mod tidy`
+`.github/workflows/ci.yml` con cinco tipos de job (el de Terraform se añadió en la Fase 6): `lint` (gofmt, `go mod tidy`
 sin cambios, `go vet`, golangci-lint v2) y `test` (`go test -race`) por
 módulo, y `compose`, que levanta el stack completo y comprueba el flujo y la
 red. Ver "Integración continua" abajo. *Hecho cuando:* la primera ejecución en
@@ -256,9 +259,19 @@ caída de Redis deja los workers `NotReady` sin reiniciarlos (detalle y límites
 en [k8s/README.md](k8s/README.md)). En CI se añadió un job que valida los
 manifiestos de forma estática.
 
-**Fase 6 — LocalStack + Terraform.** LocalStack en Compose (misma red) y
-Terraform en `terraform/` que provisiona un bucket S3 simulado; opcional:
-que el worker guarde el "recibo" de la notificación en S3.
+**Fase 6 — LocalStack + Terraform (en curso: verificada en local, pendiente de
+confirmar la primera ejecución del CI en GitHub).** LocalStack como sexto
+servicio del `docker-compose.yml`, en `outbox-net` (puerto de host `4567`), y
+Terraform en `terraform/` que provisiona un bucket S3 `outbox-receipts` (cifrado
+AES256, versionado, bloqueo de acceso público y ciclo de vida) con tests
+(`terraform test`, provider simulado) y un job de CI que ejecuta el ciclo
+completo contra un LocalStack real. **Alcance: solo infraestructura**; guardar
+el recibo de cada notificación en S3 desde el worker (la parte opcional del plan
+original) **no se implementó**. Dos hallazgos que condicionan la fase: la imagen
+actual de LocalStack exige token de pago, por lo que se **fijó la versión
+comunitaria `4.14.0`**; y LocalStack community **no hace cumplir** el bloqueo de
+acceso público (solo se puede comprobar que está configurado). Detalle en
+[terraform/README.md](terraform/README.md).
 
 ## Red Docker aislada (`outbox-net`)
 
@@ -282,7 +295,7 @@ networks:
 services:
   postgres:
     networks: [outbox-net]
-  # …los 5 servicios declaran explícitamente networks: [outbox-net]
+  # …los 6 servicios (incluido localstack) declaran explícitamente networks: [outbox-net]
 ```
 
 Ningún servicio usa la red `default` ni `external`, y los contenedores se
@@ -295,10 +308,11 @@ después (31 contenedores, 15 redes, 68 volúmenes y 41 imágenes previos) no
 cambió nada preexistente: solo se añadieron los 5 contenedores del proyecto, la
 red `outbox-net` y 2 imágenes.
 
-**Puertos del host**, todos en `127.0.0.1`: `5433` (postgres), `6380` (redis) y
-`8081` (orders-api, que dentro del contenedor escucha en `8080`). Se comprobó
-contra todos los contenedores existentes (también los detenidos) y contra los
-`docker-compose` de `goprojects`: nadie usa esos tres puertos. Los que sí usan
+**Puertos del host**, todos en `127.0.0.1`: `5433` (postgres), `6380` (redis),
+`8081` (orders-api, que dentro del contenedor escucha en `8080`) y `4567`
+(localstack, que dentro escucha en `4566`). Se comprobó contra todos los
+contenedores existentes (también los detenidos) y contra los `docker-compose`
+de `goprojects`: nadie usa esos cuatro puertos. Los que sí usan
 tus otros proyectos son `2181`, `4566`, `6379`, `8000`, `8001`, `8080`, `9092`,
 `27017` y `29092`; por eso la API sale por `8081` y no por `8080`.
 
@@ -371,6 +385,22 @@ make k8s-delete-cluster
 
 Detalle, decisiones y pruebas realizadas: [k8s/README.md](k8s/README.md).
 
+### Terraform + LocalStack (S3 simulado)
+
+Requisitos: Docker, Terraform ≥ 1.6 y `make`. LocalStack es un servicio más del
+Compose (en `outbox-net`, puerto de host `4567`), en la versión comunitaria fijada
+`4.14.0`; **no hace falta cuenta ni token**.
+
+```bash
+make tf-test      # tests de la configuración (sin LocalStack)
+make tf-apply     # levanta LocalStack si hace falta y crea el bucket outbox-receipts
+docker compose exec localstack awslocal s3 ls
+make tf-destroy
+```
+
+Detalle, límites (p. ej. LocalStack community no hace cumplir el bloqueo de
+acceso público) y pruebas realizadas: [terraform/README.md](terraform/README.md).
+
 ## Integración continua
 
 Se ejecuta en cada push a `master` y en cada pull request
@@ -382,6 +412,7 @@ misma rama cancela la ejecución anterior. Permisos mínimos (`contents: read`).
 | `lint` (uno por módulo) | `gofmt`; `go mod tidy` no cambia `go.mod`/`go.sum`; `go vet`; `golangci-lint` v2.13.2 con [`.golangci.yml`](.golangci.yml) (linters estándar + errorlint, bodyclose, noctx, rowserrcheck, sqlclosecheck, nilerr, unconvert, copyloopvar, usestdlibvars, gocritic) |
 | `test` (uno por módulo) | `go test -race` de todo, incluidos los tests de integración (testcontainers, los runners de GitHub traen Docker) |
 | `k8s` | `kubectl kustomize k8s/` y `kubeconform --strict` contra los esquemas de Kubernetes 1.36 (validación estática, sin clúster) |
+| `terraform` | `terraform fmt`, `validate` y `test`; levanta el LocalStack del Compose y hace `apply` → segundo `plan` sin cambios → comprobación independiente con `awslocal` → `destroy` |
 | `compose` | `docker compose config`, construye las imágenes y levanta el stack; comprueba que **todos los contenedores están solo en `outbox-net`**; crea un pedido y espera la notificación en el worker |
 
 La versión de Go de cada job sale del `go.mod` del módulo (`go-version-file`).

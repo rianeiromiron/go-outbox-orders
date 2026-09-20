@@ -107,6 +107,65 @@ jobs:
       - name: kubeconform --strict
         run: kubeconform -strict -summary -kubernetes-version 1.36.0 "$RUNNER_TEMP/rendered.yaml"
 
+  # Infraestructura como código: formato, validación y tests (con provider
+  # simulado), y después el ciclo completo contra un LocalStack REAL levantado con
+  # el mismo servicio del docker-compose.yml (misma imagen y versión fijada):
+  # apply → sin cambios en un segundo plan → comprobación independiente con
+  # awslocal → destroy.
+  terraform:
+    name: terraform (localstack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false # sin el envoltorio: stdout y códigos de salida intactos
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      - name: terraform init
+        run: terraform init -input=false
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: terraform test (provider simulado)
+        run: terraform test
+
+      - name: Levantar LocalStack
+        run: docker compose -f ../docker-compose.yml up -d --wait localstack
+
+      - name: terraform apply
+        run: terraform apply -input=false -auto-approve
+
+      - name: Un segundo plan no debe proponer cambios
+        run: terraform plan -input=false -detailed-exitcode
+
+      - name: El bucket existe con la configuración esperada (awslocal, independiente de Terraform)
+        run: |
+          d="docker compose -f ../docker-compose.yml exec -T localstack awslocal"
+          $d s3 ls | grep -q outbox-receipts
+          test "$($d s3api get-bucket-versioning --bucket outbox-receipts --query Status --output text)" = "Enabled"
+          test "$($d s3api get-bucket-encryption --bucket outbox-receipts --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm' --output text)" = "AES256"
+          test "$($d s3api get-public-access-block --bucket outbox-receipts --query 'PublicAccessBlockConfiguration.BlockPublicAcls' --output text)" = "True"
+
+      - name: terraform destroy
+        run: terraform destroy -input=false -auto-approve
+
+      - name: Logs de LocalStack (solo si falló)
+        if: failure()
+        run: docker compose -f ../docker-compose.yml logs --no-color localstack
+
+      - name: Apagar
+        if: always()
+        run: docker compose -f ../docker-compose.yml down -v
+
   # Humo del stack completo: construye las imágenes, levanta todo con Compose,
   # comprueba el flujo pedido → outbox → notificación y que TODOS los
   # contenedores estén únicamente en la red outbox-net.
