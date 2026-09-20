@@ -1,0 +1,9 @@
+# Clúster kind propio y aislado para este proyecto. Se crea con `make k8s-cluster`,
+# que además lo pone en una red Docker nueva (outbox-k8s) y usa un kubeconfig
+# propio (.kube/outbox-k8s.yaml): no toca la red `kind` ni ~/.kube/config de
+# otros proyectos.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: outbox-k8s
+nodes:
+  - role: control-plane

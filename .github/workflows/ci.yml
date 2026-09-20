@@ -82,6 +82,31 @@ jobs:
       - name: go test -race
         run: go test -race -count=1 -timeout 10m ./...
 
+  # Manifiestos de Kubernetes: se renderizan con kustomize y se validan en modo
+  # estricto contra los esquemas de la API de Kubernetes (la misma versión que
+  # el nodo de kind). Es una validación estática: no crea ningún clúster.
+  k8s:
+    name: k8s (manifiestos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: orders-api/go.mod
+          cache: false
+
+      # go install verifica el módulo contra el sumdb de Go (integridad).
+      - name: Instalar kubeconform
+        run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
+
+      - name: kustomize build
+        run: kubectl kustomize k8s/ > "$RUNNER_TEMP/rendered.yaml"
+
+      - name: kubeconform --strict
+        run: kubeconform -strict -summary -kubernetes-version 1.36.0 "$RUNNER_TEMP/rendered.yaml"
+
   # Humo del stack completo: construye las imágenes, levanta todo con Compose,
   # comprueba el flujo pedido → outbox → notificación y que TODOS los
   # contenedores estén únicamente en la red outbox-net.

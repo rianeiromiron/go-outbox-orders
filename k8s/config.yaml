@@ -1,0 +1,28 @@
+# Configuración compartida. SOLO PARA DESARROLLO LOCAL: las credenciales de este
+# Secret son las mismas de docker-compose.yml y están en un repositorio público a
+# propósito. En un entorno real el Secret no se versiona (Sealed Secrets, External
+# Secrets, etc.).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: outbox
+type: Opaque
+stringData:
+  POSTGRES_USER: orders
+  POSTGRES_PASSWORD: orders
+  POSTGRES_DB: orders
+  DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: outbox-config
+  namespace: outbox
+data:
+  REDIS_ADDR: redis:6379
+  HTTP_ADDR: ":8080"
+  HEALTH_ADDR: ":8080"
+  POLL_INTERVAL: 1s
+  BATCH_SIZE: "50"
+  CONCURRENCY: "10"

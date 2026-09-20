@@ -12,6 +12,7 @@ import (
 type Config struct {
 	DatabaseURL  string        `env:"DATABASE_URL,required"`
 	RedisAddr    string        `env:"REDIS_ADDR,required"`
+	HealthAddr   string        `env:"HEALTH_ADDR" envDefault:":8080"`
 	PollInterval time.Duration `env:"POLL_INTERVAL" envDefault:"1s"`
 	BatchSize    int           `env:"BATCH_SIZE" envDefault:"50"`
 	Concurrency  int           `env:"CONCURRENCY" envDefault:"10"`

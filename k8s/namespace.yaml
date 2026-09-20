@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: outbox
+  labels:
+    # Pod Security Standards: el namespace exige el perfil "baseline" (bloquea lo
+    # peligroso) y avisa/audita contra "restricted". Los pods de la API y el worker
+    # cumplen "restricted"; postgres y redis (imágenes oficiales) cumplen "baseline".
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

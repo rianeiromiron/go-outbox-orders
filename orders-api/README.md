@@ -121,6 +121,14 @@ curl -s http://localhost:8081/readyz
 make down
 ```
 
+## En Kubernetes
+
+Se despliega con 2 réplicas (`k8s/orders-api.yaml`): readiness en `/readyz` y
+liveness en `/healthz` (una base de datos caída deja la réplica `NotReady`
+pero no la reinicia). Un `initContainer` espera a que el Job de migración haya
+creado el esquema, y el contenedor corre como UID `10001` con el sistema de
+archivos raíz de solo lectura. Detalle y pruebas: [../k8s/README.md](../k8s/README.md).
+
 ## Tests
 
 ```bash

@@ -1,0 +1,120 @@
+# Sin Service: nadie llama al worker; el kubelet consulta las sondas directamente.
+# Con 2 réplicas los pollers no se pisan (FOR UPDATE SKIP LOCKED) y el guard de
+# idempotencia en Redis evita notificar dos veces el mismo evento.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifier-worker
+  namespace: outbox
+  labels:
+    app.kubernetes.io/name: notifier-worker
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notifier-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notifier-worker
+    spec:
+      # Apagado ordenado: termina el lote del poller y espera hasta 10 s a las
+      # tareas activas de Asynq; el margen evita el SIGKILL.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001 # UID numérico: la imagen declara `USER app` (nombre) y el kubelet no puede verificar un nombre
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # No arranca hasta que el Job de migración haya creado el esquema.
+        - name: wait-for-schema
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - |
+              until [ "$(psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.outbox_events') IS NOT NULL" 2>/dev/null)" = "t" ]; do
+                echo "esperando a las migraciones..."; sleep 2
+              done
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: notifier-worker
+          image: go-outbox-orders/notifier-worker:dev
+          imagePullPolicy: IfNotPresent # la imagen se carga en el clúster con `kind load`
+          ports:
+            - name: health
+              containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+            - name: REDIS_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: outbox-config
+                  key: REDIS_ADDR
+            - name: HEALTH_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: outbox-config
+                  key: HEALTH_ADDR
+            - name: POLL_INTERVAL
+              valueFrom:
+                configMapKeyRef:
+                  name: outbox-config
+                  key: POLL_INTERVAL
+            - name: BATCH_SIZE
+              valueFrom:
+                configMapKeyRef:
+                  name: outbox-config
+                  key: BATCH_SIZE
+            - name: CONCURRENCY
+              valueFrom:
+                configMapKeyRef:
+                  name: outbox-config
+                  key: CONCURRENCY
+          readinessProbe:
+            httpGet:
+              path: /readyz # Postgres y Redis responden
+              port: health
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz # solo el proceso: Redis/Postgres caídos no deben reiniciar el worker
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

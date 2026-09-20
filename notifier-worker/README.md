@@ -64,6 +64,7 @@ expira solo.
 |---|---|---|
 | `DATABASE_URL` | sí | — |
 | `REDIS_ADDR` | sí | — |
+| `HEALTH_ADDR` | no | `:8080` |
 | `POLL_INTERVAL` | no | `1s` |
 | `BATCH_SIZE` | no | `50` |
 | `CONCURRENCY` | no | `10` |
@@ -102,13 +103,31 @@ Para ver la **capa 2**, vuelve a marcar el evento como pendiente
 Prueba de punta a punta con la API: `make run-orders-api` en otra terminal y
 un `POST /orders` (ver el README de orders-api).
 
+## Sondas de salud
+
+El worker no tiene API, pero expone un pequeño servidor HTTP en `HEALTH_ADDR`
+(`internal/health`) para Docker y Kubernetes:
+
+| Ruta | Significado | Respuesta |
+|---|---|---|
+| `GET /healthz` | Liveness: el proceso responde. **No consulta dependencias** a propósito. | `200 {"status":"ok"}` |
+| `GET /readyz` | Readiness: Postgres y Redis responden (cada una con timeout de 2 s). | `200 {"status":"ready"}` o `503 {"status":"not_ready","failed":["redis"]}` |
+
+`/readyz` devuelve solo los **nombres** de las comprobaciones que fallan; el
+detalle del error va al log. Que `/healthz` ignore las dependencias evita que,
+si Redis o Postgres caen, el orquestador reinicie en cadena unos workers que no
+tienen la culpa: quedan `NotReady` (sin recibir tráfico ni bloquear
+despliegues) y se recuperan solos al volver la dependencia. Si el puerto no se
+puede abrir, el worker termina con error.
+
 ## En Docker
 
 `Dockerfile` multi-stage (`golang:1.26-alpine` → `alpine:3.22`), binario
 estático `/app/worker`, usuario no-root. Contexto de build: este directorio
 (no depende de `go.work`). En Compose el servicio arranca después de
 `postgres` y `redis` sanos y de que `migrate` termine, con
-`REDIS_ADDR=redis:6379` dentro de `outbox-net`:
+`REDIS_ADDR=redis:6379` dentro de `outbox-net`. Su `healthcheck` consulta
+`/readyz` (10 fallos seguidos cada 5 s lo marcan `unhealthy`, sin reiniciarlo):
 
 ```bash
 make up                                  # desde la raíz
@@ -136,6 +155,7 @@ son efímeros y no forman parte de `outbox-net`).
 | Dos pollers concurrentes encolan cada evento exactamente una vez (`SKIP LOCKED`) | `TestPollOnce_ConcurrentPollers…` |
 | **Capa 3**: entrega duplicada, 20 entregas concurrentes y dos tareas distintas con el mismo evento ⇒ el efecto se aplica una vez | `TestProcessTask_Duplicate…`, `…_ConcurrentDeliveries…`, `TestEndToEnd_TwoTasksForSameEvent…` |
 | El fallo del notificador se reintenta y el efecto se aplica una vez; un lock huérfano expira | `TestProcessTask_NotifierFailure…`, `TestProcessTask_StaleLock…`, `TestEndToEnd_NotifierFailure…` |
+| Sondas: `/healthz` ignora las dependencias; `/readyz` da 503 con los nombres que fallan sin filtrar el error, respeta el timeout, y solo admite GET | `internal/health/health_test.go` (sin Docker) |
 | Extremo a extremo con todo real; `Run` drena varios lotes y termina al cancelar | `TestEndToEnd_OutboxEventBecomesNotification`, `TestEndToEnd_RunDrains…` |
 
 Los tests de las capas 2 y 3 y del `SKIP LOCKED` se validaron con
@@ -173,7 +193,9 @@ Notas:
   verificado con la señal real en Docker: `docker compose stop` (SIGTERM) →
   log `apagando: terminando tareas en curso` y código de salida 0. Con
   `go run` en Windows, Ctrl+C no se ha probado de punta a punta.
-- **Sin healthcheck ni métricas.** El worker no expone HTTP: en Compose no
-  tiene `healthcheck` (si el proceso muere, el contenedor termina y
-  `restart: unless-stopped` lo levanta). Cómo hacer readiness se decide en la
-  fase de Kubernetes.
+- **Sin métricas.** Las sondas de salud existen (ver "Sondas de salud"), pero
+  no hay métricas (Prometheus) ni trazas.
+- **Readiness no mide el trabajo pendiente.** `/readyz` dice que las
+  dependencias responden, no que el backlog del outbox esté al día.
+- **En Kubernetes** las sondas fallan unos segundos al arrancar
+  (`connection refused`) mientras se abre el puerto: es normal.

@@ -32,3 +32,6 @@ go.work.sum
 .vscode/
 .DS_Store
 Thumbs.db
+
+# kubeconfig propio del clúster kind de este proyecto
+.kube/

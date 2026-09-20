@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/rianeiromiron/go-outbox-orders/notifier-worker/internal/config"
 	"github.com/rianeiromiron/go-outbox-orders/notifier-worker/internal/handlers"
+	"github.com/rianeiromiron/go-outbox-orders/notifier-worker/internal/health"
 	"github.com/rianeiromiron/go-outbox-orders/notifier-worker/internal/idempotency"
 	"github.com/rianeiromiron/go-outbox-orders/notifier-worker/internal/notify"
 	"github.com/rianeiromiron/go-outbox-orders/notifier-worker/internal/poller"
@@ -25,6 +28,8 @@ const (
 	// El lease debe superar el timeout de cada tarea (30 s, ver poller).
 	idempotencyLease = 60 * time.Second
 	idempotencyTTL   = 7 * 24 * time.Hour
+
+	readinessTimeout = 2 * time.Second
 )
 
 func main() {
@@ -64,6 +69,24 @@ func run(log *slog.Logger) error {
 	client := asynq.NewClient(redisOpt)
 	defer func() { _ = client.Close() }()
 
+	// Sondas HTTP (liveness/readiness). Si no puede abrir su puerto, el worker
+	// termina: sin sondas, Docker/Kubernetes no podrían supervisarlo.
+	healthSrv := &http.Server{
+		Addr: cfg.HealthAddr,
+		Handler: health.NewHandler(log, map[string]health.Checker{
+			"postgres": pool.Ping,
+			"redis":    func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
+		}, readinessTimeout),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	healthErr := make(chan error, 1)
+	go func() {
+		if err := healthSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			healthErr <- err
+			stop() // cancela ctx: el poller termina y run devuelve el error
+		}
+	}()
+
 	handler := &handlers.OrderCreated{
 		Notifier: notify.LogNotifier{Log: log},
 		Guard:    idempotency.New(rdb, "notifier", idempotencyLease, idempotencyTTL),
@@ -75,10 +98,21 @@ func run(log *slog.Logger) error {
 	}
 
 	log.Info("notifier-worker en marcha",
-		"poll_interval", cfg.PollInterval, "batch_size", cfg.BatchSize, "concurrency", cfg.Concurrency)
+		"poll_interval", cfg.PollInterval, "batch_size", cfg.BatchSize,
+		"concurrency", cfg.Concurrency, "health_addr", cfg.HealthAddr)
 	poller.New(pool, client, cfg.BatchSize, cfg.PollInterval, log).Run(ctx) // bloquea hasta ctx.Done
 
 	log.Info("apagando: terminando tareas en curso")
 	srv.Shutdown()
-	return nil
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = healthSrv.Shutdown(shutdownCtx)
+
+	select {
+	case err := <-healthErr:
+		return fmt.Errorf("servidor de sondas: %w", err)
+	default:
+		return nil
+	}
 }

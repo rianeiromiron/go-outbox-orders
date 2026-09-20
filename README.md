@@ -51,7 +51,7 @@ idempotente (ver "Notas de diseño").
 - [x] Fase 2 — notifier-worker (Redis + Asynq)
 - [x] Fase 3 — Docker Compose (red aislada `outbox-net`)
 - [x] Fase 4 — CI con GitHub Actions
-- [ ] Fase 5 — Despliegue en Kubernetes
+- [x] Fase 5 — Despliegue en Kubernetes
 - [ ] Fase 6 — LocalStack + Terraform (S3)
 
 Regla de trabajo: **cada fase termina actualizando este README y el
@@ -77,7 +77,7 @@ despliegan por separado.
 go-outbox-orders/
 ├── go.work                      # use ./orders-api ./notifier-worker (solo dev local)
 ├── docker-compose.yml           # stack completo en la red outbox-net: postgres, redis, migrate, orders-api, notifier-worker
-├── Makefile                     # build, vet, test, tidy, up, down, logs, ps, db-up, db-down, migrate, run-*
+├── Makefile                     # build, vet, lint, test, up/down (Compose), db-up/db-down, run-*, k8s-*
 ├── .gitignore
 ├── README.md
 ├── .github/workflows/ci.yml     # Fase 4
@@ -111,11 +111,17 @@ go-outbox-orders/
 │       ├── tasks/               # tareas Asynq + payloads (contrato del evento)
 │       ├── handlers/            # handler de order.created
 │       ├── idempotency/         # guard en Redis: efecto una vez por event_id (capa 3)
+│       ├── health/              # sondas HTTP /healthz y /readyz (Docker y Kubernetes)
 │       ├── notify/              # el efecto: Notifier (hoy solo log)
 │       ├── worker/              # arranque del asynq.Server
 │       └── testenv/             # Postgres y Redis reales (testcontainers) para los tests
 │
-├── k8s/                         # Fase 5 (Deployments, Services, ConfigMap, Secret…)
+├── k8s/                         # Fase 5: kustomize + clúster kind (ver k8s/README.md)
+│   ├── kind-cluster.yaml        # clúster "outbox-k8s"
+│   ├── kustomization.yaml, namespace.yaml, config.yaml
+│   ├── postgres.yaml, redis.yaml            # StatefulSets con PVC
+│   ├── migrate-job.yaml                     # Job de migración
+│   └── orders-api.yaml, notifier-worker.yaml  # Deployments (2 réplicas) y sondas
 └── terraform/                   # Fase 6 (provider AWS apuntando a LocalStack)
 ```
 
@@ -223,7 +229,7 @@ desde cero y el flujo funciona — verificado, incluyendo apagado con SIGTERM,
 recuperación del backlog con el worker caído y persistencia tras `down`/`up`.
 
 **Fase 4 — CI (GitHub Actions) (completada).** Workflow
-`.github/workflows/ci.yml` con tres tipos de job: `lint` (gofmt, `go mod tidy`
+`.github/workflows/ci.yml` con cuatro tipos de job: `lint` (gofmt, `go mod tidy`
 sin cambios, `go vet`, golangci-lint v2) y `test` (`go test -race`) por
 módulo, y `compose`, que levanta el stack completo y comprueba el flujo y la
 red. Ver "Integración continua" abajo. *Hecho cuando:* la primera ejecución en
@@ -235,9 +241,20 @@ Al preparar la fase, el linter encontró y se corrigieron 10 hallazgos: 8
 `defer` (cerrar el pool, cancelar el contexto) y un `httptest.NewRequest` sin
 context.
 
-**Fase 5 — Kubernetes.** Manifiestos en `k8s/` (namespace, Deployments,
-Services, ConfigMap/Secret, probes, Job de migración). Se probará en `kind`
-(ya tienes una red `kind` en Docker, así que el clúster local es viable).
+**Fase 5 — Kubernetes (completada).** Manifiestos kustomize en `k8s/`:
+namespace, StatefulSets de Postgres y Redis con PVC, Job de migración, y
+Deployments de la API y el worker con 2 réplicas, sondas, `securityContext`
+endurecido e `initContainers` que ordenan el arranque. Para poder hacer
+readiness/liveness del worker se le añadió un servidor HTTP con `/healthz` y
+`/readyz` (`internal/health`, con tests; también se usa como `healthcheck` en
+Docker Compose). Se despliega en un clúster `kind` **nuevo y aislado** (red
+Docker propia `outbox-k8s`, kubeconfig propio: no se toca la red `kind` ni
+`~/.kube/config` de otros proyectos) con imágenes cargadas por `kind load`, sin
+registro. Verificado en el clúster real: 2 réplicas de cada servicio reparten los
+eventos sin duplicar, un `rollout restart` en pleno tráfico no pierde nada y una
+caída de Redis deja los workers `NotReady` sin reiniciarlos (detalle y límites
+en [k8s/README.md](k8s/README.md)). En CI se añadió un job que valida los
+manifiestos de forma estática.
 
 **Fase 6 — LocalStack + Terraform.** LocalStack en Compose (misma red) y
 Terraform en `terraform/` que provisiona un bucket S3 simulado; opcional:
@@ -339,6 +356,21 @@ No mezcles los dos modos a la vez: ambos usan los puertos `5433`, `6380` y
 [orders-api/README.md](orders-api/README.md) y
 [notifier-worker/README.md](notifier-worker/README.md).
 
+### En Kubernetes (kind)
+
+Requisitos: Docker, `kind`, `kubectl` y `make`. Es independiente de Compose (el
+clúster tiene su propia red y sus propias instancias de Postgres y Redis).
+
+```bash
+make k8s-cluster   # una vez: clúster kind "outbox-k8s", con red Docker y kubeconfig propios
+make k8s-up        # imágenes + despliegue; espera a que todo esté listo
+kubectl --kubeconfig .kube/outbox-k8s.yaml -n outbox port-forward svc/orders-api 8082:80
+make k8s-down      # borra el namespace
+make k8s-delete-cluster
+```
+
+Detalle, decisiones y pruebas realizadas: [k8s/README.md](k8s/README.md).
+
 ## Integración continua
 
 Se ejecuta en cada push a `master` y en cada pull request
@@ -349,6 +381,7 @@ misma rama cancela la ejecución anterior. Permisos mínimos (`contents: read`).
 |---|---|
 | `lint` (uno por módulo) | `gofmt`; `go mod tidy` no cambia `go.mod`/`go.sum`; `go vet`; `golangci-lint` v2.13.2 con [`.golangci.yml`](.golangci.yml) (linters estándar + errorlint, bodyclose, noctx, rowserrcheck, sqlclosecheck, nilerr, unconvert, copyloopvar, usestdlibvars, gocritic) |
 | `test` (uno por módulo) | `go test -race` de todo, incluidos los tests de integración (testcontainers, los runners de GitHub traen Docker) |
+| `k8s` | `kubectl kustomize k8s/` y `kubeconform --strict` contra los esquemas de Kubernetes 1.36 (validación estática, sin clúster) |
 | `compose` | `docker compose config`, construye las imágenes y levanta el stack; comprueba que **todos los contenedores están solo en `outbox-net`**; crea un pedido y espera la notificación en el worker |
 
 La versión de Go de cada job sale del `go.mod` del módulo (`go-version-file`).
