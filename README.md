@@ -52,7 +52,7 @@ idempotente (ver "Notas de diseño").
 - [x] Fase 3 — Docker Compose (red aislada `outbox-net`)
 - [x] Fase 4 — CI con GitHub Actions
 - [x] Fase 5 — Despliegue en Kubernetes
-- [ ] Fase 6 — LocalStack + Terraform (S3)
+- [x] Fase 6 — LocalStack + Terraform (S3)
 
 Regla de trabajo: **cada fase termina actualizando este README y el
 README de cada servicio tocado** (qué hace, cómo probarlo aislado). Una
@@ -259,8 +259,7 @@ caída de Redis deja los workers `NotReady` sin reiniciarlos (detalle y límites
 en [k8s/README.md](k8s/README.md)). En CI se añadió un job que valida los
 manifiestos de forma estática.
 
-**Fase 6 — LocalStack + Terraform (en curso: verificada en local, pendiente de
-confirmar la primera ejecución del CI en GitHub).** LocalStack como sexto
+**Fase 6 — LocalStack + Terraform (completada).** LocalStack como sexto
 servicio del `docker-compose.yml`, en `outbox-net` (puerto de host `4567`), y
 Terraform en `terraform/` que provisiona un bucket S3 `outbox-receipts` (cifrado
 AES256, versionado, bloqueo de acceso público y ciclo de vida) con tests
@@ -270,8 +269,11 @@ el recibo de cada notificación en S3 desde el worker (la parte opcional del pla
 original) **no se implementó**. Dos hallazgos que condicionan la fase: la imagen
 actual de LocalStack exige token de pago, por lo que se **fijó la versión
 comunitaria `4.14.0`**; y LocalStack community **no hace cumplir** el bloqueo de
-acceso público (solo se puede comprobar que está configurado). Detalle en
-[terraform/README.md](terraform/README.md).
+acceso público (solo se puede comprobar que está configurado). *Hecho cuando:*
+el ciclo completo funciona contra un LocalStack real, en local y en la primera
+ejecución del CI en GitHub (7 jobs en verde; el de Terraform hizo `apply` con 5
+recursos, segundo `plan` sin cambios, verificación con `awslocal`, `destroy`, y
+los 6 `terraform test`). Detalle en [terraform/README.md](terraform/README.md).
 
 ## Red Docker aislada (`outbox-net`)
 

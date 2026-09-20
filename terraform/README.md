@@ -4,8 +4,7 @@ Infraestructura como código con [Terraform](https://www.terraform.io/) contra u
 **LocalStack** (AWS simulado) que corre en el `docker-compose.yml`, dentro de la
 red `outbox-net`. **No toca ninguna cuenta real de AWS.**
 
-**Estado:** Fase 6 completada en local; primera ejecución del CI en GitHub
-pendiente de confirmar.
+**Estado:** Fase 6 completada, verificada en local y en el CI de GitHub.
 
 ## Qué provisiona
 
